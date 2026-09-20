@@ -1,4 +1,4 @@
-# Waarnemingen Gelijkeniszoeker 0.2
+# Waarnemingen Gelijkeniszoeker 0.3
 
 Een Streamlit-prototype dat binnen een gekozen gebied nog niet tot soort
 geïdentificeerde iNaturalist-waarnemingen vergelijkt met visueel vergelijkbare
@@ -13,12 +13,14 @@ waarnemingen op overeenkomst tussen hun foto's.
 2. Zoek en selecteer verplicht een taxonomische orde.
 3. Kies de zoekafstand rond het gebied: 0 km (standaard), 100 km of 1000 km.
 4. Kies een periode en een begrenzing voor de vergelijkingsset.
-5. Start de vergelijking en selecteer daarna een waarneming.
+5. Start de vergelijking. De app vergelijkt automatisch iedere geschikte
+   waarneming uit het doelgebied met de volledige vergelijkingsset.
+6. Bekijk alleen de unieke waarnemingsparen met score 80 of 90 en exporteer ze
+   desgewenst als CSV.
 
-De app selecteert niet automatisch een inhoudelijk belangrijke waarneming. Na
-het verzamelen van de zoekset blijft de keuze leeg totdat de gebruiker bewust
-een bronwaarneming selecteert. Mogelijke overeenkomsten worden standaard pas
-getoond vanaf overeenkomstsscore 80; deze grens kan worden aangepast.
+Er is geen handmatige voorselectie van een bronwaarneming nodig. Vooraf is
+immers niet bekend welke waarneming een sterke overeenkomst zal opleveren. Een
+paar dat volledig binnen het doelgebied ligt wordt maar één keer getoond.
 
 De waarnemingen die onderzocht worden:
 
