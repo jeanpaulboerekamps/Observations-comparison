@@ -404,7 +404,7 @@ def render_observation(observation, score=None):
         st.image(photo["url"], width="stretch")
     if score is not None:
         st.markdown(
-            f'<span class="match-score">Visuele score {score:.1f}</span>',
+            f'<span class="match-score">Overeenkomstsscore {score:.1f}</span>',
             unsafe_allow_html=True,
         )
     taxon = observation.get("taxon") or {}
@@ -448,7 +448,7 @@ def preview_map(target_geometry, search_geometry, distance_km):
 init_state()
 restore_remembered_area()
 
-st.markdown('<span class="release-badge">Prototype 0.1 · visuele overeenkomst</span>', unsafe_allow_html=True)
+st.markdown('<span class="release-badge">Prototype 0.2 · minimumscore toegevoegd</span>', unsafe_allow_html=True)
 st.title("🔎 Waarnemingen Gelijkeniszoeker")
 st.markdown(
     '<div class="intro"><b>Vind waarnemingen die mogelijk van dezelfde soort zijn.</b><br>'
@@ -769,59 +769,91 @@ if focal_observations and comparison_observations and vectors:
     else:
         selected_focal = st.selectbox(
             "Kies een waarneming om te vergelijken",
-            embeddable_focal,
-            format_func=observation_title,
+            [None] + embeddable_focal,
+            index=0,
+            format_func=lambda observation: (
+                "Selecteer zelf een waarneming…"
+                if observation is None
+                else observation_title(observation)
+            ),
         )
-        top_k = st.slider("Aantal mogelijke overeenkomsten", 3, 20, 8)
-        focal_id = int(selected_focal["id"])
-        focal_vector = vectors[focal_id]
-        scored = []
-        for candidate in comparison_observations:
-            candidate_id = int(candidate["id"])
-            if candidate_id == focal_id or candidate_id not in vectors:
-                continue
-            cosine = float(np.dot(focal_vector, vectors[candidate_id]))
-            scored.append((max(0.0, cosine) * 100.0, candidate))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        matches = scored[:top_k]
-
-        focal_col, explanation_col = st.columns([1, 2])
-        with focal_col:
-            st.markdown("### Gekozen waarneming")
-            render_observation(selected_focal)
-        with explanation_col:
-            st.markdown("### Mogelijke overeenkomsten")
-            st.caption(
-                "De score is een relatieve beeldscore, geen kansberekening en geen identificatie. "
-                "Controleer vormkenmerken, levensstadium, achtergrond en fotokwaliteit altijd zelf."
+        if selected_focal is None:
+            st.info(
+                "Er is nog geen waarneming gekozen. Open het menu hierboven en selecteer "
+                "de waarneming waarvoor je mogelijke overeenkomsten wilt zien."
             )
-
-        if not matches:
-            st.info("Er zijn geen andere verwerkbare foto’s in de vergelijkingsset.")
         else:
-            for start in range(0, len(matches), 4):
-                columns = st.columns(4)
-                for column, (score, candidate) in zip(columns, matches[start:start + 4]):
-                    with column:
-                        render_observation(candidate, score=score)
+            filter_col, count_col = st.columns(2)
+            with filter_col:
+                minimum_score = st.select_slider(
+                    "Minimum overeenkomstsscore",
+                    options=list(range(50, 100, 5)),
+                    value=80,
+                    help=(
+                        "Dit is een modelschaal van 0–100, geen waarschijnlijkheidspercentage. "
+                        "Een hogere grens toont minder en strengere resultaten."
+                    ),
+                )
+            with count_col:
+                top_k = st.slider("Maximum aantal overeenkomsten", 3, 20, 8)
 
-            export_rows = [{
-                "bron_waarneming": focal_id,
-                "vergelijkbare_waarneming": int(candidate["id"]),
-                "visuele_score": round(score, 3),
-                "datum": candidate.get("observed_on") or "",
-                "huidige_identificatie": (candidate.get("taxon") or {}).get("name") or "",
-                "url": candidate.get("uri") or "",
-            } for score, candidate in matches]
-            st.download_button(
-                "⬇️ Overeenkomsten downloaden als CSV",
-                pd.DataFrame(export_rows).to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"overeenkomsten_{focal_id}.csv",
-                mime="text/csv",
-            )
+            focal_id = int(selected_focal["id"])
+            focal_vector = vectors[focal_id]
+            scored = []
+            for candidate in comparison_observations:
+                candidate_id = int(candidate["id"])
+                if candidate_id == focal_id or candidate_id not in vectors:
+                    continue
+                cosine = float(np.dot(focal_vector, vectors[candidate_id]))
+                score = max(0.0, cosine) * 100.0
+                if score >= minimum_score:
+                    scored.append((score, candidate))
+            scored.sort(key=lambda item: item[0], reverse=True)
+            matches = scored[:top_k]
+
+            focal_col, explanation_col = st.columns([1, 2])
+            with focal_col:
+                st.markdown("### Gekozen waarneming")
+                render_observation(selected_focal)
+            with explanation_col:
+                st.markdown("### Mogelijke overeenkomsten")
+                st.caption(
+                    "Alleen resultaten met minimaal de ingestelde overeenkomstsscore worden getoond. "
+                    "De score is geen kansberekening en geen identificatie. Controleer vormkenmerken, "
+                    "levensstadium, achtergrond en fotokwaliteit altijd zelf."
+                )
+
+            if not matches:
+                st.info(
+                    f"Geen andere waarneming behaalt de minimumscore van {minimum_score}. "
+                    "Dat betekent dat het model binnen deze vergelijkingsset geen sterke visuele "
+                    "overeenkomst heeft gevonden. Je kunt de grens desgewenst verlagen."
+                )
+            else:
+                for start in range(0, len(matches), 4):
+                    columns = st.columns(4)
+                    for column, (score, candidate) in zip(columns, matches[start:start + 4]):
+                        with column:
+                            render_observation(candidate, score=score)
+
+                export_rows = [{
+                    "bron_waarneming": focal_id,
+                    "vergelijkbare_waarneming": int(candidate["id"]),
+                    "overeenkomstsscore": round(score, 3),
+                    "minimumscore": minimum_score,
+                    "datum": candidate.get("observed_on") or "",
+                    "huidige_identificatie": (candidate.get("taxon") or {}).get("name") or "",
+                    "url": candidate.get("uri") or "",
+                } for score, candidate in matches]
+                st.download_button(
+                    "⬇️ Overeenkomsten downloaden als CSV",
+                    pd.DataFrame(export_rows).to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"overeenkomsten_{focal_id}.csv",
+                    mime="text/csv",
+                )
 
 st.divider()
 st.caption(
-    "Prototype 0.1 · openbare gegevens van iNaturalist · foto’s worden alleen gebruikt om "
+    "Prototype 0.2 · openbare gegevens van iNaturalist · foto’s worden alleen gebruikt om "
     "tijdelijke beeldkenmerken te berekenen; de toepassing stelt geen soortnamen voor."
 )

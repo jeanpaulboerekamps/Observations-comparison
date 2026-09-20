@@ -1,4 +1,4 @@
-# Waarnemingen Gelijkeniszoeker 0.1
+# Waarnemingen Gelijkeniszoeker 0.2
 
 Een Streamlit-prototype dat binnen een gekozen gebied nog niet tot soort
 geïdentificeerde iNaturalist-waarnemingen vergelijkt met visueel vergelijkbare
@@ -14,6 +14,11 @@ waarnemingen op overeenkomst tussen hun foto's.
 3. Kies de zoekafstand rond het gebied: 0 km (standaard), 100 km of 1000 km.
 4. Kies een periode en een begrenzing voor de vergelijkingsset.
 5. Start de vergelijking en selecteer daarna een waarneming.
+
+De app selecteert niet automatisch een inhoudelijk belangrijke waarneming. Na
+het verzamelen van de zoekset blijft de keuze leeg totdat de gebruiker bewust
+een bronwaarneming selecteert. Mogelijke overeenkomsten worden standaard pas
+getoond vanaf overeenkomstsscore 80; deze grens kan worden aangepast.
 
 De waarnemingen die onderzocht worden:
 
@@ -47,9 +52,10 @@ EfficientNet-B0 zet de foto's om in beeldvectoren. Bij meerdere foto's wordt
 het gemiddelde van de genormaliseerde vectoren gebruikt. De kandidaten worden
 gerangschikt met cosinusovereenkomst.
 
-De getoonde visuele score is geen waarschijnlijkheid en geen taxonomische
-identificatie. Achtergrond, camerahoek, levensstadium en fotokwaliteit kunnen de
-rangschikking beïnvloeden.
+De getoonde overeenkomstsscore loopt van 0 tot 100, maar is geen
+waarschijnlijkheidspercentage en geen taxonomische identificatie. Een score 80
+betekent dus niet dat er 80% kans is op dezelfde soort. Achtergrond, camerahoek,
+levensstadium en fotokwaliteit kunnen de rangschikking beïnvloeden.
 
 ## Beperking van belasting
 
