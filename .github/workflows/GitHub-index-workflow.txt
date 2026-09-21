@@ -1,0 +1,44 @@
+name: Build observation index
+on:
+  workflow_dispatch:
+    inputs:
+      area_file:
+        description: "GeoJSON path committed to repository, e.g. areas/mijn-gebied.geojson"
+        required: true
+      order_id:
+        description: "iNaturalist taxon ID for the order"
+        required: true
+      order_name:
+        description: "Display name of order"
+        required: true
+      start_date:
+        description: "Start date YYYY-MM-DD"
+        required: true
+      end_date:
+        description: "End date YYYY-MM-DD"
+        required: true
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    concurrency:
+      group: observation-index
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Build or resume index
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          AREA_FILE: ${{ inputs.area_file }}
+          ORDER_ID: ${{ inputs.order_id }}
+          ORDER_NAME: ${{ inputs.order_name }}
+          START_DATE: ${{ inputs.start_date }}
+          END_DATE: ${{ inputs.end_date }}
+        run: |
+          python indexer.py --area "$AREA_FILE" --order-id "$ORDER_ID" \
+            --order-name "$ORDER_NAME" --start "$START_DATE" --end "$END_DATE"
