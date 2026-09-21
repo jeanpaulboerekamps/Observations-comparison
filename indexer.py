@@ -41,8 +41,13 @@ def inat(params):
 
 
 def supabase(table, method, payload=None, params=None):
-    url = os.environ["SUPABASE_URL"].rstrip("/") + "/rest/v1/" + table
-    key = os.environ["SUPABASE_SECRET_KEY"]
+    url = os.environ["SUPABASE_URL"].strip().rstrip("/") + "/rest/v1/" + table
+    # Clipboard/UI transfers may add surrounding whitespace or a line break.
+    # Normalize without ever printing the credential in an exception.
+    key = "".join(os.environ["SUPABASE_SECRET_KEY"].strip().strip("'\"").split())
+    if not key.startswith(("sb_secret_", "eyJ")):
+        raise ValueError("SUPABASE_SECRET_KEY bevat geen ruwe Supabase secret key. "
+                         "Kopieer uitsluitend de waarde met de Copy-knop in Supabase.")
     headers = {"apikey": key, "Content-Type": "application/json",
                "Prefer": "resolution=merge-duplicates,return=representation"}
     for attempt in range(4):
