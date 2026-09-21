@@ -227,7 +227,7 @@ def preview_map(target_geometry, search_geometry, distance_km):
 init_state()
 restore_remembered_area()
 
-st.markdown('<span class="release-badge">Prototype 0.5.1 · begeleid beoordelen</span>', unsafe_allow_html=True)
+st.markdown('<span class="release-badge">Prototype 0.5.2 · begeleid beoordelen</span>', unsafe_allow_html=True)
 st.title("🔎 Waarnemingen Gelijkeniszoeker")
 st.markdown(
     '<div class="intro"><b>Vind waarnemingen die mogelijk van dezelfde soort zijn.</b><br>'
@@ -601,9 +601,11 @@ if "index_pairs" in st.session_state:
                     current, other = (left, right) if first else (right, left)
                     step = 1 if first else 2
                     st.markdown(f"**Stap {step} van 2 — waarneming #{current['id']}**")
-                    st.caption("Kopieer eerst deze tekst. Open daarna de waarneming; "
-                               "iNaturalist gebruikt het account waarmee je in deze browser bent aangemeld.")
-                    st.code(comment_body(prior["choice"], other["id"]), language=None)
+                    st.caption("Tik in het tekstvak en kies Selecteer alles → Kopieer. "
+                               "Open daarna de waarneming; iNaturalist gebruikt het account "
+                               "waarmee je in deze browser bent aangemeld.")
+                    st.text_area("Tekst voor iNaturalist", value=comment_body(prior["choice"], other["id"]),
+                                 height=120, key=f"copy_text_{ids}_{step}")
                     st.link_button(f"Open waarneming #{current['id']} in nieuw tabblad", current["uri"])
                     if st.button(f"Ik heb de opmerking op #{current['id']} geplaatst",
                                  key=f"manual_next_{ids}_{step}"):
@@ -675,4 +677,4 @@ if "index_pairs" in st.session_state:
                            "overeenkomsten.csv", "text/csv")
 
 st.divider()
-st.caption("Prototype 0.5.1 · vergelijking zonder iNaturalist-verzoeken · handmatige opmerkingen worden niet automatisch geplaatst.")
+st.caption("Prototype 0.5.2 · vergelijking zonder iNaturalist-verzoeken · handmatige opmerkingen worden niet automatisch geplaatst.")
