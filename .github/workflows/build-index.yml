@@ -4,7 +4,13 @@ on:
     inputs:
       area_file:
         description: "GeoJSON path committed to repository, e.g. areas/mijn-gebied.geojson"
-        required: true
+        required: false
+      area_geojson:
+        description: "GeoJSON geometry sent securely from the app (leave blank when using area_file)"
+        required: false
+      area_label:
+        description: "Name of the index area (filled by the app)"
+        required: false
       order_id:
         description: "iNaturalist taxon ID for the order"
         required: true
@@ -35,10 +41,18 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           AREA_FILE: ${{ inputs.area_file }}
+          AREA_GEOJSON: ${{ inputs.area_geojson }}
+          AREA_LABEL: ${{ inputs.area_label }}
           ORDER_ID: ${{ inputs.order_id }}
           ORDER_NAME: ${{ inputs.order_name }}
           START_DATE: ${{ inputs.start_date }}
           END_DATE: ${{ inputs.end_date }}
         run: |
-          python indexer.py --area "$AREA_FILE" --order-id "$ORDER_ID" \
-            --order-name "$ORDER_NAME" --start "$START_DATE" --end "$END_DATE"
+          if [ -n "$AREA_GEOJSON" ]; then
+            python indexer.py --area-json-env AREA_GEOJSON --area-label "$AREA_LABEL" \
+              --order-id "$ORDER_ID" --order-name "$ORDER_NAME" \
+              --start "$START_DATE" --end "$END_DATE"
+          else
+            python indexer.py --area "$AREA_FILE" --order-id "$ORDER_ID" \
+              --order-name "$ORDER_NAME" --start "$START_DATE" --end "$END_DATE"
+          fi
