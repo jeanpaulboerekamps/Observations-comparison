@@ -4,6 +4,7 @@ from datetime import date
 import base64
 import html
 import json
+import hmac
 import zlib
 
 import folium
@@ -15,6 +16,8 @@ from shapely.geometry import shape
 from streamlit_folium import st_folium
 
 from core import buffer_geometry_km
+from review import (CHOICES, authorization_url, comment_body, exchange_code,
+                    load_reviews, manual_review_record, pair_ids, publish_review, save_review)
 
 st.set_page_config(
     page_title="Waarnemingen Gelijkeniszoeker",
@@ -61,6 +64,7 @@ def init_state():
         "focal_observations": None,
         "comparison_vectors": None,
         "search_meta": {},
+        "manual_reviews": {},
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -186,6 +190,15 @@ def render_observation(observation, score=None):
         st.caption(" · ".join(part for part in (attribution, license_code) if part))
 
 
+def save_manual_choice(database_url, review_key, persistent, ids, choice, status):
+    record = manual_review_record(*ids, choice, status)
+    if persistent:
+        record = save_review(database_url, review_key, record)
+    else:
+        st.session_state.manual_reviews[ids] = record
+    return record
+
+
 def preview_map(target_geometry, search_geometry, distance_km):
     target_shape = shape(target_geometry)
     display_shape = shape(search_geometry)
@@ -214,13 +227,78 @@ def preview_map(target_geometry, search_geometry, distance_km):
 init_state()
 restore_remembered_area()
 
-st.markdown('<span class="release-badge">Prototype 0.4 · opgeslagen index</span>', unsafe_allow_html=True)
+st.markdown('<span class="release-badge">Prototype 0.5.1 · begeleid beoordelen</span>', unsafe_allow_html=True)
 st.title("🔎 Waarnemingen Gelijkeniszoeker")
 st.markdown(
     '<div class="intro"><b>Vind waarnemingen die mogelijk van dezelfde soort zijn.</b><br>'
     'De toepassing rangschikt foto’s op visuele overeenkomst, maar stelt geen soortnaam voor.</div>',
     unsafe_allow_html=True,
 )
+
+# iNaturalist authorization is per browser session; the public app never posts
+# as the owner until their own iNaturalist account has authorized it.
+oauth_id = st.secrets.get("INAT_CLIENT_ID", "")
+oauth_secret = st.secrets.get("INAT_CLIENT_SECRET", "")
+oauth_redirect = st.secrets.get("INAT_REDIRECT_URI", "")
+reviewer_login = st.secrets.get("REVIEWER_INAT_LOGIN", "")
+review_key = st.secrets.get("SUPABASE_SECRET_KEY", "")
+review_ready = all((oauth_id, oauth_secret, oauth_redirect, reviewer_login, review_key))
+if review_ready:
+    if "code" in st.query_params and "state" in st.query_params:
+        try:
+            token, user, saved_area = exchange_code(
+                oauth_id, oauth_secret, oauth_redirect,
+                st.query_params["state"], st.query_params["code"],
+            )
+            if user.get("login", "").lower() != reviewer_login.lower():
+                raise ValueError("Dit iNaturalist-account is niet ingesteld als beoordelaar.")
+            st.session_state.inat_access_token = token
+            st.session_state.inat_user = user
+            st.query_params.clear()
+            if saved_area:
+                st.query_params["gebied"] = saved_area
+                restore_remembered_area()
+            st.success(f"Aangemeld bij iNaturalist als {user['login']}.")
+        except Exception as exc:
+            st.query_params.clear()
+            st.error(f"Aanmelden bij iNaturalist mislukte: {exc}")
+    if st.session_state.get("inat_access_token"):
+        login_col, logout_col = st.columns([3, 1])
+        login_col.success(f"Beoordelaar: {st.session_state.inat_user['login']}")
+        if logout_col.button("Afmelden", key="inat_logout"):
+            st.session_state.pop("inat_access_token", None)
+            st.session_state.pop("inat_user", None)
+            st.rerun()
+    else:
+        st.link_button("🔐 Aanmelden met iNaturalist om paren te beoordelen",
+                       authorization_url(oauth_id, oauth_secret, oauth_redirect,
+                                         st.query_params.get("gebied", "")))
+else:
+    st.caption("Beoordeel en plaats de opmerkingen handmatig. Rechtstreeks plaatsen wordt pas mogelijk met iNaturalist API-toegang.")
+
+manual_password = st.secrets.get("REVIEW_PASSPHRASE", "")
+manual_persistent = bool(review_key and manual_password and len(manual_password) >= 16)
+manual_access = not manual_persistent
+if manual_persistent:
+    if st.session_state.get("manual_access"):
+        manual_access = True
+        st.success("Handmatige beoordeling ontgrendeld; je keuzes worden bewaard.")
+        if st.button("Beoordeling vergrendelen"):
+            st.session_state.manual_access = False
+            st.rerun()
+    else:
+        with st.form("manual_login"):
+            entered = st.text_input("Toegangscode voor de handmatige beoordeling", type="password")
+            submitted = st.form_submit_button("Beoordeling ontgrendelen")
+        if submitted:
+            if hmac.compare_digest(entered, manual_password):
+                st.session_state.manual_access = True
+                st.rerun()
+            else:
+                st.error("De toegangscode klopt niet.")
+else:
+    st.info("Je kunt de handmatige werkwijze alvast uitproberen. Zonder opslaginstelling "
+            "blijven keuzes alleen bewaard zolang dit app-tabblad open is; download je voortgang als CSV.")
 
 pick_col, new_col = st.columns([3, 1])
 with pick_col:
@@ -469,21 +547,132 @@ if "index_pairs" in st.session_state:
         st.info("Er zijn geen paren boven deze drempel gevonden in de volledig geïndexeerde zoekset.")
     else:
         st.caption("De score meet visuele overeenkomst. Controleer soortkenmerken zelf; de app stelt geen soortnaam vast.")
-        for n, (score, left, right) in enumerate(pairs[:200], 1):
+        reviewer = st.session_state.get("inat_user") if review_ready else None
+        review_enabled = bool(reviewer and st.session_state.get("inat_access_token"))
+        manual_mode = bool(manual_access and not review_enabled)
+        reviews = {}
+        review_ids = list({pair_ids(left["id"], right["id"])
+                           for _, left, right in pairs})
+        if review_enabled:
+            try:
+                reviews = load_reviews(database_url, review_key, reviewer["id"], review_ids)
+            except Exception as exc:
+                st.error(f"Beoordelingen konden niet worden geladen: {exc}")
+                review_enabled = False
+        elif manual_mode:
+            if manual_persistent:
+                try:
+                    reviews = load_reviews(database_url, review_key, 0, review_ids)
+                except Exception as exc:
+                    st.error(f"Handmatige beoordelingen konden niet worden geladen: {exc}")
+                    manual_mode = False
+            else:
+                reviews = {ids: value for ids, value in st.session_state.manual_reviews.items()
+                           if ids in review_ids}
+        show_open = st.checkbox("Alleen nog niet beoordeelde paren tonen", value=False,
+                                disabled=not (review_enabled or manual_mode))
+        visible = [(score, left, right) for score, left, right in pairs
+                   if not show_open or reviews.get(pair_ids(left["id"], right["id"]), {}).get("status") != "complete"]
+        finished_count = sum(row["status"] == "complete" for row in reviews.values())
+        st.caption(f"{finished_count} afgerond · {len(visible)} paren in deze lijst")
+        pages = max(1, (len(visible) + 9) // 10)
+        page = st.number_input("Pagina (10 paren per pagina)", min_value=1,
+                               max_value=pages, value=1, step=1)
+        for n, (score, left, right) in enumerate(visible[(page - 1) * 10:page * 10],
+                                                (page - 1) * 10 + 1):
+            if int(left["id"]) > int(right["id"]):
+                left, right = right, left  # Consistent order after a search setting changes.
+            ids = pair_ids(left["id"], right["id"])
+            prior = reviews.get(ids)
             st.markdown(f"### Paar {n} · score {score:.1f}")
             l, r = st.columns(2)
             with l:
                 render_observation(left)
             with r:
                 render_observation(right)
-        if len(pairs) > 200:
-            st.info(f"De eerste 200 van {len(pairs)} paren zijn getoond; de CSV bevat ze allemaal.")
+            if manual_mode and prior:
+                st.info(f"Keuze: {CHOICES[prior['choice']][0]}")
+                if prior["choice"] == "unrelated":
+                    st.caption("Afgerond; er zijn geen opmerkingen nodig.")
+                elif prior["status"] == "complete":
+                    st.caption("Je hebt aangegeven dat je beide opmerkingen hebt geplaatst.")
+                else:
+                    first = prior["status"] == "pending"
+                    current, other = (left, right) if first else (right, left)
+                    step = 1 if first else 2
+                    st.markdown(f"**Stap {step} van 2 — waarneming #{current['id']}**")
+                    st.caption("Kopieer eerst deze tekst. Open daarna de waarneming; "
+                               "iNaturalist gebruikt het account waarmee je in deze browser bent aangemeld.")
+                    st.code(comment_body(prior["choice"], other["id"]), language=None)
+                    st.link_button(f"Open waarneming #{current['id']} in nieuw tabblad", current["uri"])
+                    if st.button(f"Ik heb de opmerking op #{current['id']} geplaatst",
+                                 key=f"manual_next_{ids}_{step}"):
+                        try:
+                            save_manual_choice(database_url, review_key, manual_persistent,
+                                               ids, prior["choice"],
+                                               "uncertain" if first else "complete")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Voortgang kon niet worden opgeslagen: {exc}")
+            elif manual_mode:
+                with st.form(f"manual_{ids[0]}_{ids[1]}"):
+                    choice = st.radio("Jouw beoordeling", list(CHOICES),
+                                      format_func=lambda k: CHOICES[k][0],
+                                      index=None, key=f"manual_choice_{ids}")
+                    confirmed = st.form_submit_button("Keuze vastleggen")
+                if confirmed and choice:
+                    try:
+                        save_manual_choice(database_url, review_key, manual_persistent,
+                                           ids, choice, "complete" if choice == "unrelated" else "pending")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Keuze kon niet worden opgeslagen: {exc}")
+                elif confirmed:
+                    st.warning("Kies eerst één van de vier beoordelingen.")
+            elif prior:
+                st.info(f"Beoordeling: {CHOICES[prior['choice']][0]} · "
+                        f"{('beide opmerkingen geplaatst' if prior['status'] == 'complete' else 'controle nodig' if prior['status'] == 'uncertain' else 'nog niet volledig')}.")
+            elif review_enabled:
+                with st.form(f"review_{ids[0]}_{ids[1]}"):
+                    choice = st.radio("Jouw beoordeling", list(CHOICES),
+                                      format_func=lambda k: CHOICES[k][0],
+                                      index=None, key=f"choice_{ids[0]}_{ids[1]}")
+                    if choice in CHOICES and choice != "unrelated":
+                        st.caption("Opmerking op beide waarnemingen:")
+                        st.code(comment_body(choice, ids[1]) + "\n" +
+                                comment_body(choice, ids[0]), language=None)
+                    confirmed = st.form_submit_button(
+                        "Beoordeling opslaan en opmerkingen plaatsen" if choice != "unrelated" else "Beoordeling opslaan",
+                    )
+                if confirmed and choice:
+                    try:
+                        publish_review(database_url, review_key,
+                                       st.session_state.inat_access_token, reviewer["id"],
+                                       *ids, choice)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Niet volledig verwerkt: {exc}. Controleer de opmerkingen op iNaturalist "
+                                 "voordat je opnieuw probeert. De al geplaatste opmerking wordt niet herhaald.")
+                elif confirmed:
+                    st.warning("Kies eerst één van de vier beoordelingen.")
+            if prior and prior["status"] == "pending" and review_enabled:
+                if st.button("Ontbrekende opmerking opnieuw proberen", key=f"retry_{ids}"):
+                    try:
+                        publish_review(database_url, review_key,
+                                       st.session_state.inat_access_token, reviewer["id"],
+                                       *ids, prior["choice"], prior)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Niet volledig verwerkt: {exc}. Bekijk beide waarnemingen voordat je opnieuw probeert.")
+            st.divider()
         export = [{"waarneming_1": left["id"], "waarneming_2": right["id"],
-                   "score": round(score, 3), "url_1": left["uri"], "url_2": right["uri"]}
+                   "score": round(score, 3), "url_1": left["uri"], "url_2": right["uri"],
+                   "beoordeling": (reviews.get(pair_ids(left["id"], right["id"])) or {}).get("choice", ""),
+                   "voortgang": (reviews.get(pair_ids(left["id"], right["id"])) or {}).get("status", "")}
                   for score, left, right in pairs]
-        st.download_button("⬇️ Alle paren downloaden als CSV",
+        st.download_button("⬇️ Alle paren en voortgang downloaden als CSV",
                            pd.DataFrame(export).to_csv(index=False).encode("utf-8-sig"),
                            "overeenkomsten.csv", "text/csv")
 
 st.divider()
-st.caption("Prototype 0.4 · vooraf opgebouwde index · geen iNaturalist-API-verzoeken tijdens vergelijking.")
+st.caption("Prototype 0.5.1 · vergelijking zonder iNaturalist-verzoeken · handmatige opmerkingen worden niet automatisch geplaatst.")
