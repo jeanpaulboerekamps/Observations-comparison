@@ -1,90 +1,30 @@
-# Waarnemingen Gelijkeniszoeker 0.3
+# Waarnemingen Gelijkeniszoeker 0.4
 
-Een Streamlit-prototype dat binnen een gekozen gebied nog niet tot soort
-geïdentificeerde iNaturalist-waarnemingen vergelijkt met visueel vergelijkbare
-waarnemingen uit hetzelfde gebied of een zone daaromheen.
+De app vergelijkt foto's van iNaturalist-waarnemingen die wel tot een gekozen orde, maar nog niet tot een soort zijn geïdentificeerd. De vergelijking gebruikt vooraf opgeslagen beeldkenmerken. Een score van 80 of 90 is een modelschaal, geen kans op dezelfde soort.
 
-De toepassing **identificeert geen soorten**. Zij rangschikt alleen andere
-waarnemingen op overeenkomst tussen hun foto's.
+## Instellen
 
-## Werkwijze
+1. Open in het gezonde Supabase-project **SQL Editor → New query**. Plak de inhoud van supabase/schema.sql en klik **Run**. Dit maakt de vector-extensie, tabellen en leesrechten aan.
+2. Upload de bestanden uit deze zip naar de hoofdmap van je bestaande GitHub-repository. Behoud de mappen supabase/ en .github/workflows/; app.py hoort in de hoofdmap.
+3. Open **Supabase → Project Settings → API Keys** en gebruik de project-URL, de publishable key en de secret key.
+4. Maak in **GitHub → Settings → Secrets and variables → Actions** twee repository secrets aan: SUPABASE_URL (project-URL) en SUPABASE_SECRET_KEY (de sb_secret_… sleutel). Zet de geheime sleutel nooit in GitHub-bestanden of in een chat.
+5. Zet in **Streamlit → Manage app → Settings → Secrets** uitsluitend de project-URL en de publishable key:
 
-1. Open een bestaand GeoJSON-gebied of teken een gebied op de kaart.
-2. Zoek en selecteer verplicht een taxonomische orde.
-3. Kies de zoekafstand rond het gebied: 0 km (standaard), 100 km of 1000 km.
-4. Kies een periode en een begrenzing voor de vergelijkingsset.
-5. Start de vergelijking. De app vergelijkt automatisch iedere geschikte
-   waarneming uit het doelgebied met de volledige vergelijkingsset.
-6. Bekijk alleen de unieke waarnemingsparen met score 80 of 90 en exporteer ze
-   desgewenst als CSV.
+    SUPABASE_URL = "https://jouw-project.supabase.co"
+    SUPABASE_PUBLISHABLE_KEY = "sb_publishable_..."
 
-Er is geen handmatige voorselectie van een bronwaarneming nodig. Vooraf is
-immers niet bekend welke waarneming een sterke overeenkomst zal opleveren. Een
-paar dat volledig binnen het doelgebied ligt wordt maar één keer getoond.
+De app meldt dat de index nog leeg is totdat er een indexeeractie klaar is.
 
-De waarnemingen die onderzocht worden:
+## Eerste index
 
-- liggen exact binnen het gekozen gebied;
-- hebben ten minste één foto;
-- behoren volgens hun huidige iNaturalist-identificatie tot de gekozen orde;
-- zijn nog niet op soortniveau of lager geïdentificeerd.
+1. Sla een gebied als GeoJSON op en upload dit in je repository als areas/mijn-gebied.geojson. Het gehele gewenste zoekgebied, inclusief een buffer van 100 of 1000 km, moet binnen dat indexgebied vallen.
+2. Open **GitHub → Actions → Build observation index → Run workflow**. Vul het GeoJSON-pad, het iNaturalist-taxon-ID van de orde, een naam en een begin- en einddatum in. Begin met een klein gebied en een beperkte periode.
+3. Wacht tot de workflow groen is. Daarna kun je het begin- en zoekgebied binnen de geïndexeerde zone kiezen in Streamlit. Bij een fout krijgt de index geen status 'complete'; je kunt dezelfde workflow opnieuw starten.
 
-Volledig onbekende waarnemingen vallen buiten de selectie, omdat hun orde nog
-niet bekend is. Identificaties op bijvoorbeeld orde-, familie-, tribus- of
-genusniveau tellen wel mee.
+De app meldt als de zone of periode niet volledig binnen één gereed indexgebied ligt. Boven 20.000 vergelijkingswaarnemingen vraagt hij om een kleiner gebied of kortere periode. De eerste 200 paren verschijnen op het scherm; de CSV bevat alle paren.
 
-## Gebied en zoekafstand
+## Foto's en rechten
 
-De gebiedsfunctionaliteit is afkomstig uit Biodiversiteit Verkenner. Gebieden
-kunnen als GeoJSON worden geopend, getekend, via de URL worden hersteld en weer
-worden gedownload.
+Supabase bewaart de publieke waarnemingsgegevens, de fotolink en het beeldkenmerk. Foto's worden tijdens het indexeren opgehaald om dat kenmerk te berekenen. Ze worden nog niet naar Supabase Storage gekopieerd: per foto moet eerst de licentie beoordeeld worden. Tijdens het vergelijken wordt de iNaturalist-API niet aangesproken; voor het tonen van een treffer laadt de browser de originele fotolink.
 
-- **0 km:** alleen het gekozen gebied;
-- **100 km:** het gebied plus een buffer van 100 km vanaf de buitengrens;
-- **1000 km:** het gebied plus een buffer van 1000 km vanaf de buitengrens.
-
-De buffer wordt in meters berekend in een lokale azimutale projectie en daarna
-teruggezet naar WGS84. De iNaturalist-aanvraag gebruikt eerst de begrenzende
-rechthoek; daarna voert de app lokaal de exacte polygooncontrole uit.
-
-## Visuele vergelijking
-
-Per waarneming worden maximaal twee foto's verwerkt. Een vooraf getrainde
-EfficientNet-B0 zet de foto's om in beeldvectoren. Bij meerdere foto's wordt
-het gemiddelde van de genormaliseerde vectoren gebruikt. De kandidaten worden
-gerangschikt met cosinusovereenkomst.
-
-De getoonde overeenkomstsscore loopt van 0 tot 100, maar is geen
-waarschijnlijkheidspercentage en geen taxonomische identificatie. Een score 80
-betekent dus niet dat er 80% kans is op dezelfde soort. Achtergrond, camerahoek,
-levensstadium en fotokwaliteit kunnen de rangschikking beïnvloeden.
-
-## Beperking van belasting
-
-- Er wordt pas gezocht nadat zowel een gebied als een orde is gekozen.
-- API-verzoeken worden begrensd tot ongeveer één per seconde.
-- De vergelijkingsset is expliciet begrensd op 100, 250 of 500 waarnemingen.
-- De nieuwste passende waarnemingen worden gebruikt wanneer er meer resultaten
-  zijn dan de ingestelde grens.
-- API-antwoorden en berekende beeldvectoren worden tijdelijk gecachet.
-
-## Installatie
-
-```bash
-python -m pip install -r requirements.txt
-python -m streamlit run app.py
-```
-
-Bij de eerste beeldvergelijking downloadt torchvision eenmalig de vooraf
-getrainde EfficientNet-B0-gewichten. Hiervoor zijn geen API-sleutels of
-Streamlit Secrets nodig. De afhankelijkheden gebruiken expliciet de
-CPU-uitvoering van PyTorch; er worden geen CUDA- of andere GPU-pakketten
-geïnstalleerd.
-
-## Privacy en auteursrecht
-
-De app gebruikt openbare iNaturalist-gegevens. Foto's worden opgehaald om
-tijdelijke beeldvectoren te berekenen; de afbeeldingsbestanden worden niet als
-onderdeel van de toepassing opgeslagen. Bij de resultaten worden beschikbare
-fotocredits en licentiecodes getoond. Controleer voor verder gebruik altijd de
-licentie op de gekoppelde iNaturalist-pagina.
+De gratis Supabase-laag heeft beperkte capaciteit en kan na inactiviteit pauzeren. Begin daarom klein.

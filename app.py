@@ -1,50 +1,20 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 import base64
 import html
-from io import BytesIO
 import json
-import logging
-import math
-import sys
-import threading
-import time
 import zlib
 
 import folium
 import numpy as np
 import pandas as pd
-import requests
 import streamlit as st
-from PIL import Image
 from folium.plugins import Draw
 from shapely.geometry import shape
 from streamlit_folium import st_folium
 
-from core import (
-    bounds_for_api,
-    buffer_geometry_km,
-    is_not_identified_to_species,
-    observations_in_geometry,
-)
-
-
-OBS_API = "https://api.inaturalist.org/v1/observations"
-TAXA_AUTOCOMPLETE_API = "https://api.inaturalist.org/v1/taxa/autocomplete"
-MIN_REQUEST_INTERVAL = 1.02
-MAX_FOCAL_OBSERVATIONS = 100
-MAX_PHOTOS_PER_OBSERVATION = 2
-REQUEST_LOCK = threading.Lock()
-LAST_REQUEST_AT = 0.0
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-log = logging.getLogger("waarnemingen-gelijkeniszoeker")
+from core import buffer_geometry_km
 
 st.set_page_config(
     page_title="Waarnemingen Gelijkeniszoeker",
@@ -188,210 +158,6 @@ def area_filename(name):
     return f"{safe or 'zoekgebied'}.geojson"
 
 
-def request_json(url, params, timeout=(10, 45)):
-    global LAST_REQUEST_AT
-    last_error = None
-    for attempt in range(4):
-        try:
-            with REQUEST_LOCK:
-                wait = MIN_REQUEST_INTERVAL - (time.monotonic() - LAST_REQUEST_AT)
-                if wait > 0:
-                    time.sleep(wait)
-                LAST_REQUEST_AT = time.monotonic()
-            response = requests.get(
-                url,
-                params=params,
-                timeout=timeout,
-                headers={"User-Agent": "Waarnemingen-Gelijkeniszoeker/0.1"},
-            )
-            if response.status_code == 429 or response.status_code >= 500:
-                time.sleep(0.8 * (2 ** attempt))
-                continue
-            response.raise_for_status()
-            return response.json()
-        except Exception as exc:
-            last_error = exc
-            time.sleep(0.6 * (2 ** attempt))
-    raise RuntimeError(f"iNaturalist kon niet worden bereikt: {last_error}")
-
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def search_orders(query):
-    query = (query or "").strip()
-    if len(query) < 2:
-        return []
-    results = {}
-    for locale in ("nl", "en"):
-        payload = request_json(TAXA_AUTOCOMPLETE_API, {
-            "q": query,
-            "rank": "order",
-            "per_page": 30,
-            "locale": locale,
-        })
-        for taxon in payload.get("results", []):
-            if taxon.get("rank") != "order" or not taxon.get("id"):
-                continue
-            taxon_id = int(taxon["id"])
-            scientific = taxon.get("name") or ""
-            common = taxon.get("preferred_common_name") or ""
-            title = f"{common} ({scientific})" if common and common != scientific else scientific
-            current = results.get(taxon_id)
-            if not current or (common and current["label"] == current["scientific_name"]):
-                results[taxon_id] = {
-                    "id": taxon_id,
-                    "label": title,
-                    "scientific_name": scientific,
-                }
-    return sorted(results.values(), key=lambda item: item["label"].lower())
-
-
-def compact_photo(photo):
-    if not photo:
-        return None
-    url = str(photo.get("medium_url") or photo.get("url") or "").replace("square", "medium")
-    if not url:
-        return None
-    return {
-        "url": url,
-        "attribution": photo.get("attribution") or "",
-        "license_code": photo.get("license_code") or "",
-    }
-
-
-def compact_observation(observation):
-    photos = [compact_photo(photo) for photo in observation.get("photos") or []]
-    taxon = observation.get("taxon") or {}
-    return {
-        "id": observation.get("id"),
-        "observed_on": observation.get("observed_on") or "",
-        "created_at": observation.get("created_at") or "",
-        "geojson": observation.get("geojson"),
-        "taxon": {
-            "id": taxon.get("id"),
-            "rank": taxon.get("rank"),
-            "name": taxon.get("name"),
-            "preferred_common_name": taxon.get("preferred_common_name"),
-        },
-        "photos": [photo for photo in photos if photo][:MAX_PHOTOS_PER_OBSERVATION],
-        "uri": observation.get("uri") or f"https://www.inaturalist.org/observations/{observation.get('id')}",
-        "user": (observation.get("user") or {}).get("login") or "",
-    }
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_observations(base_params_tuple, bbox, max_rows):
-    """Fetch a deliberately bounded newest-first candidate set."""
-    base = dict(base_params_tuple)
-    south, west, north, east = bbox
-    first_params = dict(base)
-    first_params.update({
-        "swlat": south, "swlng": west, "nelat": north, "nelng": east,
-        "page": 1, "per_page": 200,
-    })
-    first = request_json(OBS_API, first_params)
-    total = int(first.get("total_results", 0) or 0)
-    page_count = min(50, max(1, math.ceil(min(total, max_rows) / 200)))
-    pages = {1: first.get("results", [])}
-    for page in range(2, page_count + 1):
-        params = dict(first_params)
-        params["page"] = page
-        pages[page] = request_json(OBS_API, params).get("results", [])
-    rows = [
-        compact_observation(item)
-        for page in range(1, page_count + 1)
-        for item in pages.get(page, [])
-    ]
-    return rows[:max_rows], total, total > max_rows
-
-
-def eligible_observations(observations, geometry, limit):
-    selected = [
-        observation
-        for observation in observations_in_geometry(observations, geometry)
-        if observation.get("photos") and is_not_identified_to_species(observation)
-    ]
-    selected.sort(
-        key=lambda item: item.get("observed_on") or item.get("created_at") or "",
-        reverse=True,
-    )
-    return selected[:limit], len(selected) > limit
-
-
-@st.cache_resource(show_spinner=False)
-def load_embedding_model():
-    import torch
-    from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0
-
-    weights = EfficientNet_B0_Weights.DEFAULT
-    model = efficientnet_b0(weights=weights)
-    model.classifier = torch.nn.Identity()
-    model.eval()
-    return model, weights.transforms()
-
-
-def download_image(url):
-    try:
-        response = requests.get(
-            url,
-            timeout=(8, 30),
-            headers={"User-Agent": "Waarnemingen-Gelijkeniszoeker/0.1"},
-        )
-        response.raise_for_status()
-        return url, Image.open(BytesIO(response.content)).convert("RGB")
-    except Exception as exc:
-        log.warning("Foto kon niet worden geladen (%s): %s", url, exc)
-        return url, None
-
-
-@st.cache_data(ttl=604800, max_entries=8, show_spinner=False)
-def embed_photo_urls(urls_tuple):
-    """Download photos and embed them in batches; image bytes are not retained."""
-    import torch
-
-    model, preprocess = load_embedding_model()
-    images = {}
-    with ThreadPoolExecutor(max_workers=min(6, max(1, len(urls_tuple)))) as executor:
-        futures = [executor.submit(download_image, url) for url in urls_tuple]
-        for future in as_completed(futures):
-            url, image = future.result()
-            if image is not None:
-                images[url] = image
-
-    vectors = {}
-    ordered_urls = [url for url in urls_tuple if url in images]
-    for start in range(0, len(ordered_urls), 16):
-        batch_urls = ordered_urls[start:start + 16]
-        batch = torch.stack([preprocess(images[url]) for url in batch_urls])
-        with torch.inference_mode():
-            output = model(batch).cpu().numpy().astype("float32")
-        output = output / np.maximum(np.linalg.norm(output, axis=1, keepdims=True), 1e-12)
-        for url, vector in zip(batch_urls, output):
-            vectors[url] = vector
-    return vectors
-
-
-def observation_embeddings(observations):
-    urls = tuple(dict.fromkeys(
-        photo["url"]
-        for observation in observations
-        for photo in observation.get("photos") or []
-    ))
-    photo_vectors = embed_photo_urls(urls)
-    observation_vectors = {}
-    for observation in observations:
-        vectors = [
-            photo_vectors[photo["url"]]
-            for photo in observation.get("photos") or []
-            if photo["url"] in photo_vectors
-        ]
-        if not vectors:
-            continue
-        vector = np.mean(np.stack(vectors), axis=0)
-        vector = vector / max(float(np.linalg.norm(vector)), 1e-12)
-        observation_vectors[int(observation["id"])] = vector.astype("float32")
-    return observation_vectors
-
-
 def observation_title(observation):
     taxon = observation.get("taxon") or {}
     name = taxon.get("preferred_common_name") or taxon.get("name") or "Onbekend taxon"
@@ -448,7 +214,7 @@ def preview_map(target_geometry, search_geometry, distance_km):
 init_state()
 restore_remembered_area()
 
-st.markdown('<span class="release-badge">Prototype 0.3 · automatische vergelijking</span>', unsafe_allow_html=True)
+st.markdown('<span class="release-badge">Prototype 0.4 · opgeslagen index</span>', unsafe_allow_html=True)
 st.title("🔎 Waarnemingen Gelijkeniszoeker")
 st.markdown(
     '<div class="intro"><b>Vind waarnemingen die mogelijk van dezelfde soort zijn.</b><br>'
@@ -581,62 +347,46 @@ if st.session_state.show_area_creator:
 
 st.divider()
 st.subheader("Zoekinstellingen")
-st.markdown("**1. Kies verplicht een orde**")
-st.caption("Zoek op de Nederlandse, Engelse of wetenschappelijke naam van een orde.")
-with st.form("order_search_form", clear_on_submit=False):
-    order_search_col, order_button_col = st.columns([3, 1])
-    with order_search_col:
-        order_query = st.text_input(
-            "Orde zoeken",
-            placeholder="Bijvoorbeeld: Lepidoptera of vlinders",
-            label_visibility="collapsed",
-        )
-    with order_button_col:
-        search_order = st.form_submit_button("Zoeken", use_container_width=True)
-if search_order:
-    st.session_state.pop("selected_order_option", None)
-    if len(order_query.strip()) < 2:
-        st.session_state.order_candidates = []
-        st.warning("Typ minimaal twee tekens om een orde te zoeken.")
-    else:
-        with st.spinner("Ordes zoeken…"):
-            st.session_state.order_candidates = search_orders(order_query)
-        if not st.session_state.order_candidates:
-            st.warning("Geen orde gevonden. Probeer een andere naam.")
+from indexed import MODEL_VERSION, coverage as load_coverage, observations as load_indexed, parse_embedding
+from shapely.geometry import Point
 
-selected_order = None
-if st.session_state.order_candidates:
-    selected_order = st.selectbox(
-        "Orde",
-        [None] + st.session_state.order_candidates,
-        key="selected_order_option",
-        format_func=lambda item: "Kies een orde…" if item is None else item["label"],
-    )
+def settings():
+    return st.secrets.get("SUPABASE_URL", ""), st.secrets.get("SUPABASE_PUBLISHABLE_KEY", "")
 
-settings_a, settings_b, settings_c = st.columns(3)
-with settings_a:
-    distance_km = st.radio(
-        "2. Zoekafstand rondom het gebied",
-        [0, 100, 1000],
-        index=0,
-        format_func=lambda value: f"{value} km",
-        horizontal=True,
-    )
-with settings_b:
-    current_year = date.today().year
-    year_range = st.slider(
-        "3. Waarnemingsjaren",
-        2008,
-        current_year,
-        (max(2008, current_year - 9), current_year),
-    )
-with settings_c:
-    comparison_limit = st.selectbox(
-        "4. Maximum vergelijkingsset",
-        [100, 250, 500],
-        index=1,
-        help="Een begrenzing voorkomt onnodige API- en fotobelasting.",
-    )
+try:
+    database_url, publishable_key = settings()
+    if not database_url or not publishable_key:
+        st.error("Supabase is nog niet ingesteld. Voeg SUPABASE_URL en SUPABASE_PUBLISHABLE_KEY toe aan de Streamlit-secrets.")
+        st.stop()
+    coverages = load_coverage(database_url, publishable_key)
+except Exception as exc:
+    st.error(f"De opgeslagen index kon niet worden gelezen: {exc}")
+    st.stop()
+
+if not coverages:
+    st.info("Er is nog geen volledige index beschikbaar. De beheerder kan eerst een gebied en orde indexeren.")
+    st.stop()
+
+orders = {int(item["order_id"]): item["order_name"] for item in coverages}
+order_id = st.selectbox("1. Orde (verplicht)", sorted(orders), format_func=lambda value: orders[value])
+distance_km = st.radio("2. Zoekafstand rondom het geselecteerde gebied", [0, 100, 1000],
+                       index=0, format_func=lambda n: f"{n} km", horizontal=True)
+available = [item for item in coverages if int(item["order_id"]) == order_id
+             and item["model_version"] == MODEL_VERSION]
+if not available:
+    st.warning("Deze index gebruikt een ander beeldmodel en moet opnieuw opgebouwd worden.")
+    st.stop()
+earliest = min(date.fromisoformat(item["first_date"]) for item in available)
+latest = max(date.fromisoformat(item["last_date"]) for item in available)
+chosen_dates = st.date_input("3. Waarnemingsperiode", (earliest, latest),
+                             min_value=earliest, max_value=latest)
+if len(chosen_dates) != 2:
+    st.info("Kies ook een einddatum voor de periode.")
+    st.stop()
+start, end = chosen_dates
+threshold = st.radio("Minimum visuele score", [80, 90], horizontal=True,
+                     format_func=lambda n: f"{n} of hoger",
+                     help="Dit is een modelschaal; de score is geen kanspercentage.")
 
 active_area = st.session_state.active_area
 has_area = bool(active_area and active_area in st.session_state.areas)
@@ -645,231 +395,95 @@ if has_area:
     search_geometry = buffer_geometry_km(target_geometry, distance_km)
     with st.expander("Gebied en zoekzone bekijken", expanded=False):
         preview_map(target_geometry, search_geometry, distance_km)
+else:
+    st.info("Selecteer of teken eerst een gebied.")
 
-can_search = bool(has_area and selected_order)
-if not can_search:
-    st.caption("Selecteer een gebied en een orde om te kunnen zoeken.")
-
-if st.button("🔎 Vergelijkbare waarnemingen zoeken", type="primary", disabled=not can_search):
-    clear_results()
-    target_geometry = normalize_geometry_longitudes(st.session_state.areas[active_area])
-    search_geometry = buffer_geometry_km(target_geometry, distance_km)
-    base_params = {
-        "d1": f"{year_range[0]}-01-01",
-        "d2": f"{year_range[1]}-12-31",
-        "geo": "true",
-        "photos": "true",
-        "taxon_id": int(selected_order["id"]),
-        "locale": "en",
-        "order_by": "observed_on",
-        "order": "desc",
-    }
-    base_tuple = tuple(sorted(base_params.items()))
-    raw_limit = max(1200, comparison_limit * 4)
-
+signature = (active_area, order_id, distance_km, start, end, threshold)
+if st.session_state.get("index_signature") != signature:
+    st.session_state.pop("index_pairs", None)
+    st.session_state.index_signature = signature
+if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary", disabled=not has_area):
+    zone = shape(search_geometry)
+    matching = [item for item in available
+                if date.fromisoformat(item["first_date"]) <= start
+                and date.fromisoformat(item["last_date"]) >= end
+                and shape(item["geometry"]).covers(zone)]
+    if not matching:
+        st.warning("Dit gebied, de gekozen zoekafstand en periode zijn nog niet volledig geïndexeerd. "
+                   "Een grotere index voor deze orde is nodig voordat een volledige vergelijking mogelijk is.")
+        st.stop()
     try:
-        with st.status("Waarnemingen verzamelen…", expanded=True) as status:
-            st.write("Waarnemingen in het geselecteerde gebied ophalen…")
-            target_raw, target_api_total, target_api_limited = fetch_observations(
-                base_tuple, bounds_for_api(target_geometry), raw_limit
-            )
-            focal, focal_limited = eligible_observations(
-                target_raw, target_geometry, MAX_FOCAL_OBSERVATIONS
-            )
-
-            if distance_km == 0:
-                comparison_raw = target_raw
-                comparison_api_total = target_api_total
-                comparison_api_limited = target_api_limited
-            else:
-                st.write(f"Vergelijkingswaarnemingen binnen {distance_km} km ophalen…")
-                comparison_raw, comparison_api_total, comparison_api_limited = fetch_observations(
-                    base_tuple, bounds_for_api(search_geometry), raw_limit
-                )
-            comparison, comparison_limited = eligible_observations(
-                comparison_raw, search_geometry, comparison_limit
-            )
-
-            all_observations = {
-                int(observation["id"]): observation
-                for observation in [*comparison, *focal]
-            }
-            if not focal:
-                status.update(label="Geen geschikte waarnemingen gevonden", state="error")
-                st.warning(
-                    "Binnen het geselecteerde gebied zijn geen waarnemingen met foto gevonden "
-                    "die tot deze orde behoren maar nog niet tot soort zijn geïdentificeerd."
-                )
-            elif len(all_observations) < 2:
-                status.update(label="Te weinig waarnemingen gevonden", state="error")
-                st.warning("Er zijn minstens twee geschikte waarnemingen nodig om te vergelijken.")
-            else:
-                st.write(f"Beeldkenmerken voor {len(all_observations):,} waarnemingen berekenen…")
-                vectors = observation_embeddings(list(all_observations.values()))
-                if len(vectors) < 2:
-                    status.update(label="Foto’s konden niet worden verwerkt", state="error")
-                    st.warning("Van minder dan twee waarnemingen kon een foto worden verwerkt.")
-                else:
-                    st.session_state.focal_observations = focal
-                    st.session_state.comparison_observations = comparison
-                    st.session_state.comparison_vectors = vectors
-                    st.session_state.search_meta = {
-                        "area": active_area,
-                        "order": selected_order,
-                        "distance_km": distance_km,
-                        "years": year_range,
-                        "comparison_limit": comparison_limit,
-                        "target_api_total": target_api_total,
-                        "comparison_api_total": comparison_api_total,
-                        "limited": any((
-                            target_api_limited, comparison_api_limited,
-                            focal_limited, comparison_limited,
-                        )),
-                    }
-                    status.update(label="Visuele vergelijking gereed", state="complete")
+        with st.status("Opgeslagen beeldkenmerken vergelijken…", expanded=True) as status:
+            records = load_indexed(database_url, publishable_key, order_id,
+                                   start.isoformat(), end.isoformat())
+            target_shape = shape(target_geometry)
+            candidates = {}
+            for row in records:
+                point = Point(row["longitude"], row["latitude"])
+                if row["model_version"] == MODEL_VERSION and zone.covers(point):
+                    candidates[int(row["id"])] = row
+            targets = [row for row in candidates.values()
+                       if target_shape.covers(Point(row["longitude"], row["latitude"]))]
+            others = list(candidates.values())
+            st.write(f"{len(targets)} waarnemingen in het begingebied, "
+                     f"{len(others)} in de vergelijkingszone.")
+            if len(others) > 20000:
+                st.error("Deze zoekset is te groot voor een volledige vergelijking op de huidige server. "
+                         "Kies een kleiner gebied of kortere periode.")
+                st.stop()
+            pairs = []
+            if targets and len(others) > 1:
+                b = np.asarray([parse_embedding(row["embedding"]) for row in others], dtype=np.float32)
+                a = np.asarray([parse_embedding(row["embedding"]) for row in targets], dtype=np.float32)
+                b /= np.maximum(np.linalg.norm(b, axis=1, keepdims=True), 1e-12)
+                a /= np.maximum(np.linalg.norm(a, axis=1, keepdims=True), 1e-12)
+                seen = set()
+                for offset in range(0, len(a), 128):
+                    scores = (a[offset:offset + 128] @ b.T) * 100
+                    for i, j in zip(*np.where(scores >= threshold)):
+                        left = targets[offset + int(i)]
+                        right = others[int(j)]
+                        if left["id"] == right["id"]:
+                            continue
+                        key = tuple(sorted((left["id"], right["id"])))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        pairs.append((float(scores[i, j]), left["observation"], right["observation"]))
+                pairs.sort(key=lambda item: item[0], reverse=True)
+            st.session_state.index_pairs = pairs
+            st.session_state.index_counts = (len(targets), len(others))
+            status.update(label="Vergelijking gereed", state="complete")
     except Exception as exc:
-        st.error(f"De vergelijking kon niet worden uitgevoerd: {exc}")
+        st.error(f"De vergelijking is mislukt: {exc}")
 
-focal_observations = st.session_state.focal_observations
-comparison_observations = st.session_state.comparison_observations
-vectors = st.session_state.comparison_vectors
-
-if focal_observations and comparison_observations and vectors:
-    meta = st.session_state.search_meta
-    current_order_id = int(selected_order["id"]) if selected_order else None
-    result_order_id = int((meta.get("order") or {}).get("id")) if meta.get("order") else None
-    results_are_current = (
-        meta.get("area") == active_area
-        and result_order_id == current_order_id
-        and meta.get("distance_km") == distance_km
-        and tuple(meta.get("years") or ()) == tuple(year_range)
-        and meta.get("comparison_limit") == comparison_limit
-    )
-    st.divider()
+if "index_pairs" in st.session_state:
+    pairs = st.session_state.index_pairs
+    target_count, candidate_count = st.session_state.index_counts
     st.subheader("Vergelijkingsresultaten")
-    if not results_are_current:
-        st.warning(
-            "De zoekinstellingen zijn gewijzigd. Start de zoekopdracht opnieuw om de resultaten bij te werken."
-        )
-    metric_a, metric_b, metric_c = st.columns(3)
-    metric_a.metric("Te onderzoeken", len(focal_observations))
-    metric_b.metric("Vergelijkingsset", len(comparison_observations))
-    metric_c.metric("Zoekafstand", f"{meta.get('distance_km', 0)} km")
-    if meta.get("limited"):
-        st.info(
-            "De zoekset is begrensd om iNaturalist en de fotoservers niet onnodig te belasten. "
-            "De nieuwste passende waarnemingen zijn gebruikt."
-        )
-
-    embeddable_focal = {
-        int(observation["id"]): observation
-        for observation in focal_observations
-        if int(observation["id"]) in vectors
-    }
-    embeddable_comparison = {
-        int(observation["id"]): observation
-        for observation in comparison_observations
-        if int(observation["id"]) in vectors
-    }
-    if not embeddable_focal or not embeddable_comparison:
-        st.warning("De foto’s van de gevonden waarnemingen konden niet worden verwerkt.")
+    a, b, c = st.columns(3)
+    a.metric("In het begingebied", target_count)
+    b.metric("In de vergelijkingszone", candidate_count)
+    c.metric("Sterke waarnemingsparen", len(pairs))
+    if not pairs:
+        st.info("Er zijn geen paren boven deze drempel gevonden in de volledig geïndexeerde zoekset.")
     else:
-        threshold_col, explanation_col = st.columns([1, 2])
-        with threshold_col:
-            minimum_score = st.radio(
-                "Minimum overeenkomstsscore",
-                [80, 90],
-                index=0,
-                format_func=lambda value: f"{value} of hoger",
-                horizontal=True,
-                help=(
-                    "Dit is een modelschaal van 0–100, geen waarschijnlijkheidspercentage. "
-                    "Score 90 is strenger dan score 80."
-                ),
-            )
-        with explanation_col:
-            st.caption(
-                "Alle waarnemingen in het doelgebied worden automatisch met de volledige "
-                "vergelijkingsset vergeleken. Alleen unieke paren boven de gekozen grens verschijnen."
-            )
-
-        pairs = []
-        seen_pairs = set()
-        focal_with_match = set()
-        for focal_id, focal in embeddable_focal.items():
-            focal_vector = vectors[focal_id]
-            for candidate_id, candidate in embeddable_comparison.items():
-                if candidate_id == focal_id:
-                    continue
-                pair_key = tuple(sorted((focal_id, candidate_id)))
-                if pair_key in seen_pairs:
-                    continue
-                cosine = float(np.dot(focal_vector, vectors[candidate_id]))
-                score = max(0.0, cosine) * 100.0
-                if score < minimum_score:
-                    continue
-                seen_pairs.add(pair_key)
-                focal_with_match.add(focal_id)
-                if candidate_id in embeddable_focal:
-                    focal_with_match.add(candidate_id)
-                pairs.append((score, focal, candidate))
-        pairs.sort(key=lambda item: item[0], reverse=True)
-
-        result_a, result_b = st.columns(2)
-        result_a.metric("Waarnemingen met een treffer", len(focal_with_match))
-        result_b.metric("Unieke overeenkomsten", len(pairs))
-
-        if not pairs:
-            st.info(
-                f"Geen enkel waarnemingspaar behaalt de minimumscore van {minimum_score}. "
-                "Het model heeft binnen deze zoekset dus geen sterke visuele overeenkomst gevonden."
-            )
-        else:
-            max_visible_pairs = 200
-            visible_pairs = pairs[:max_visible_pairs]
-            if len(pairs) > max_visible_pairs:
-                st.info(
-                    f"Er zijn {len(pairs):,} sterke paren gevonden. De {max_visible_pairs} hoogste "
-                    "scores worden hieronder getoond; de CSV bevat alle paren."
-                )
-            for number, (score, left_observation, right_observation) in enumerate(visible_pairs, 1):
-                st.markdown(f"### Overeenkomst {number} · score {score:.1f}")
-                left_col, right_col = st.columns(2)
-                with left_col:
-                    st.caption("Waarneming uit het geselecteerde gebied")
-                    render_observation(left_observation)
-                with right_col:
-                    candidate_id = int(right_observation["id"])
-                    location_label = (
-                        "Waarneming uit het geselecteerde gebied"
-                        if candidate_id in embeddable_focal
-                        else f"Waarneming uit de zoekzone van {meta.get('distance_km', 0)} km"
-                    )
-                    st.caption(location_label)
-                    render_observation(right_observation)
-                st.divider()
-
-            export_rows = [{
-                "waarneming_1": int(left_observation["id"]),
-                "waarneming_2": int(right_observation["id"]),
-                "overeenkomstsscore": round(score, 3),
-                "minimumscore": minimum_score,
-                "datum_1": left_observation.get("observed_on") or "",
-                "datum_2": right_observation.get("observed_on") or "",
-                "huidige_identificatie_1": (left_observation.get("taxon") or {}).get("name") or "",
-                "huidige_identificatie_2": (right_observation.get("taxon") or {}).get("name") or "",
-                "url_1": left_observation.get("uri") or "",
-                "url_2": right_observation.get("uri") or "",
-            } for score, left_observation, right_observation in pairs]
-            st.download_button(
-                "⬇️ Alle sterke overeenkomsten downloaden als CSV",
-                pd.DataFrame(export_rows).to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"sterke_overeenkomsten_minimum_{minimum_score}.csv",
-                mime="text/csv",
-            )
+        st.caption("De score meet visuele overeenkomst. Controleer soortkenmerken zelf; de app stelt geen soortnaam vast.")
+        for n, (score, left, right) in enumerate(pairs[:200], 1):
+            st.markdown(f"### Paar {n} · score {score:.1f}")
+            l, r = st.columns(2)
+            with l:
+                render_observation(left)
+            with r:
+                render_observation(right)
+        if len(pairs) > 200:
+            st.info(f"De eerste 200 van {len(pairs)} paren zijn getoond; de CSV bevat ze allemaal.")
+        export = [{"waarneming_1": left["id"], "waarneming_2": right["id"],
+                   "score": round(score, 3), "url_1": left["uri"], "url_2": right["uri"]}
+                  for score, left, right in pairs]
+        st.download_button("⬇️ Alle paren downloaden als CSV",
+                           pd.DataFrame(export).to_csv(index=False).encode("utf-8-sig"),
+                           "overeenkomsten.csv", "text/csv")
 
 st.divider()
-st.caption(
-    "Prototype 0.3 · openbare gegevens van iNaturalist · foto’s worden alleen gebruikt om "
-    "tijdelijke beeldkenmerken te berekenen; de toepassing stelt geen soortnamen voor."
-)
+st.caption("Prototype 0.4 · vooraf opgebouwde index · geen iNaturalist-API-verzoeken tijdens vergelijking.")

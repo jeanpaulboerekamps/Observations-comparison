@@ -34,3 +34,4 @@ def test_positive_buffer_expands_bounds():
     assert buffered_bounds[1] < original_bounds[1]
     assert buffered_bounds[2] > original_bounds[2]
     assert buffered_bounds[3] > original_bounds[3]
+

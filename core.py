@@ -63,3 +63,4 @@ def bounds_for_api(geometry: dict) -> tuple[float, float, float, float]:
     """Return API bbox in south, west, north, east order."""
     west, south, east, north = shape(geometry).bounds
     return south, west, north, east
+
