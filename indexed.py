@@ -5,7 +5,9 @@ import json
 import requests
 
 
-MODEL_VERSION = "efficientnet_b0_imagenet1k_v1"
+# The embedding model is unchanged; this version marks indexes that include
+# species-level observations and a snapshot of links in iNaturalist comments.
+MODEL_VERSION = "efficientnet_b0_imagenet1k_v1_full_order_links_v2"
 
 
 def get_rows(url, key, table, params):

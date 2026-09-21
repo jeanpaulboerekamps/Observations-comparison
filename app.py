@@ -16,6 +16,7 @@ from shapely.geometry import shape
 from streamlit_folium import st_folium
 
 from core import buffer_geometry_km
+from dispatch import dispatch_index
 from review import (CHOICES, authorization_url, comment_body, exchange_code,
                     load_reviews, manual_review_record, pair_ids, publish_review, save_review)
 
@@ -227,7 +228,7 @@ def preview_map(target_geometry, search_geometry, distance_km):
 init_state()
 restore_remembered_area()
 
-st.markdown('<span class="release-badge">Prototype 0.5.2 · begeleid beoordelen</span>', unsafe_allow_html=True)
+st.markdown('<span class="release-badge">Prototype 0.6 · uitgebreide vergelijkingsindex</span>', unsafe_allow_html=True)
 st.title("🔎 Waarnemingen Gelijkeniszoeker")
 st.markdown(
     '<div class="intro"><b>Vind waarnemingen die mogelijk van dezelfde soort zijn.</b><br>'
@@ -451,11 +452,9 @@ distance_km = st.radio("2. Zoekafstand rondom het geselecteerde gebied", [0, 100
                        index=0, format_func=lambda n: f"{n} km", horizontal=True)
 available = [item for item in coverages if int(item["order_id"]) == order_id
              and item["model_version"] == MODEL_VERSION]
-if not available:
-    st.warning("Deze index gebruikt een ander beeldmodel en moet opnieuw opgebouwd worden.")
-    st.stop()
-earliest = min(date.fromisoformat(item["first_date"]) for item in available)
-latest = max(date.fromisoformat(item["last_date"]) for item in available)
+all_for_order = [item for item in coverages if int(item["order_id"]) == order_id]
+earliest = min(date.fromisoformat(item["first_date"]) for item in all_for_order)
+latest = max(date.fromisoformat(item["last_date"]) for item in all_for_order)
 chosen_dates = st.date_input("3. Waarnemingsperiode", (earliest, latest),
                              min_value=earliest, max_value=latest)
 if len(chosen_dates) != 2:
@@ -476,20 +475,48 @@ if has_area:
 else:
     st.info("Selecteer of teken eerst een gebied.")
 
+matching = ([item for item in available
+             if date.fromisoformat(item["first_date"]) <= start
+             and date.fromisoformat(item["last_date"]) >= end
+             and shape(item["geometry"]).covers(shape(search_geometry))] if has_area else [])
+if has_area and not matching:
+    st.warning("Voor dit gebied, de zoekafstand en periode is nog geen volledige index beschikbaar. "
+               "Een eerdere index met alleen ongedetermineerde waarnemingen moet opnieuw worden opgebouwd.")
+if has_area:
+    github_token = st.secrets.get("GITHUB_DISPATCH_TOKEN", "")
+    with st.expander("Index beheren", expanded=not bool(matching)):
+        if github_token and manual_persistent and manual_access:
+            dispatch_signature = (active_area, order_id, distance_km, start, end)
+            previously_started = st.session_state.get("dispatched_index") == dispatch_signature
+            if previously_started:
+                st.info("De indexeeractie is gestart. Ververs de pagina wanneer de actie klaar is.")
+            if matching:
+                st.caption("Een nieuwe indexeeractie haalt ook nieuwe opmerkingen op, "
+                           "en gebruikt opgeslagen beeldkenmerken opnieuw als de foto ongewijzigd is.")
+            if st.button("🗂️ Index voor dit gebied en deze orde " +
+                         ("vernieuwen" if matching else "opbouwen"),
+                         disabled=previously_started):
+                try:
+                    run_url = dispatch_index(github_token, search_geometry, order_id,
+                                             orders[order_id], start, end)
+                    st.session_state.dispatched_index = dispatch_signature
+                    st.success("De indexeeractie is gestart; je kunt de app later verversen.")
+                    st.link_button("Voortgang bekijken", run_url)
+                except Exception as exc:
+                    st.error(f"De indexeeractie kon niet worden gestart: {exc}")
+        elif github_token and manual_persistent:
+            st.info("Ontgrendel hierboven de beoordeling om een indexeeractie te starten.")
+        else:
+            st.info("De beheerder moet eenmalig GITHUB_DISPATCH_TOKEN en REVIEW_PASSPHRASE "
+                    "instellen in de Streamlit-secrets om vanuit de app een index te starten.")
+
 signature = (active_area, order_id, distance_km, start, end, threshold)
 if st.session_state.get("index_signature") != signature:
     st.session_state.pop("index_pairs", None)
     st.session_state.index_signature = signature
-if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary", disabled=not has_area):
+if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary",
+             disabled=not matching):
     zone = shape(search_geometry)
-    matching = [item for item in available
-                if date.fromisoformat(item["first_date"]) <= start
-                and date.fromisoformat(item["last_date"]) >= end
-                and shape(item["geometry"]).covers(zone)]
-    if not matching:
-        st.warning("Dit gebied, de gekozen zoekafstand en periode zijn nog niet volledig geïndexeerd. "
-                   "Een grotere index voor deze orde is nodig voordat een volledige vergelijking mogelijk is.")
-        st.stop()
     try:
         with st.status("Opgeslagen beeldkenmerken vergelijken…", expanded=True) as status:
             records = load_indexed(database_url, publishable_key, order_id,
@@ -501,7 +528,8 @@ if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary",
                 if row["model_version"] == MODEL_VERSION and zone.covers(point):
                     candidates[int(row["id"])] = row
             targets = [row for row in candidates.values()
-                       if target_shape.covers(Point(row["longitude"], row["latitude"]))]
+                       if row["observation"].get("needs_species_id")
+                       and target_shape.covers(Point(row["longitude"], row["latitude"]))]
             others = list(candidates.values())
             st.write(f"{len(targets)} waarnemingen in het begingebied, "
                      f"{len(others)} in de vergelijkingszone.")
@@ -522,6 +550,9 @@ if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary",
                         left = targets[offset + int(i)]
                         right = others[int(j)]
                         if left["id"] == right["id"]:
+                            continue
+                        if (int(right["id"]) in left["observation"].get("comment_links", [])
+                                or int(left["id"]) in right["observation"].get("comment_links", [])):
                             continue
                         key = tuple(sorted((left["id"], right["id"])))
                         if key in seen:
@@ -569,12 +600,10 @@ if "index_pairs" in st.session_state:
             else:
                 reviews = {ids: value for ids, value in st.session_state.manual_reviews.items()
                            if ids in review_ids}
-        show_open = st.checkbox("Alleen nog niet beoordeelde paren tonen", value=False,
-                                disabled=not (review_enabled or manual_mode))
         visible = [(score, left, right) for score, left, right in pairs
-                   if not show_open or reviews.get(pair_ids(left["id"], right["id"]), {}).get("status") != "complete"]
+                   if reviews.get(pair_ids(left["id"], right["id"]), {}).get("status") != "complete"]
         finished_count = sum(row["status"] == "complete" for row in reviews.values())
-        st.caption(f"{finished_count} afgerond · {len(visible)} paren in deze lijst")
+        st.caption(f"{finished_count} afgerond · {len(visible)} nog te beoordelen")
         pages = max(1, (len(visible) + 9) // 10)
         page = st.number_input("Pagina (10 paren per pagina)", min_value=1,
                                max_value=pages, value=1, step=1)
@@ -677,4 +706,4 @@ if "index_pairs" in st.session_state:
                            "overeenkomsten.csv", "text/csv")
 
 st.divider()
-st.caption("Prototype 0.5.2 · vergelijking zonder iNaturalist-verzoeken · handmatige opmerkingen worden niet automatisch geplaatst.")
+st.caption("Prototype 0.6 · vergelijking zonder iNaturalist-verzoeken · opmerkingen worden bij het indexeren ingelezen.")

@@ -6,6 +6,7 @@ from datetime import date, timedelta
 import json
 import math
 import os
+import re
 import time
 
 import numpy as np
@@ -69,6 +70,62 @@ def read_area(path):
     return geometry
 
 
+def read_area_input(path, environment_name):
+    if environment_name:
+        data = json.loads(os.environ[environment_name])
+        geometry = (data.get("features") or [{}])[0].get("geometry") if data.get("type") == "FeatureCollection" else data.get("geometry", data)
+        if not geometry or shape(geometry).is_empty or not shape(geometry).is_valid:
+            raise ValueError("GeoJSON bevat geen geldig gebied")
+        return geometry
+    return read_area(path)
+
+
+OBS_LINK = re.compile(r"https?://(?:www\.)?inaturalist\.org/observations/(\d+)(?!\d)", re.I)
+
+
+def links_from_comments(comments):
+    return sorted({int(match) for comment in comments or []
+                   for match in OBS_LINK.findall(comment.get("body") or "")})
+
+
+def comment_links(items):
+    """Batch observation detail requests; no individual request per observation."""
+    links = {}
+    with_comments = [int(item["id"]) for item in items
+                     if item.get("comments_count", 1) or item.get("comments")]
+    for start in range(0, len(with_comments), 50):
+        identifiers = with_comments[start:start + 50]
+        result = inat_details(identifiers)
+        returned = {int(row["id"]): row for row in result}
+        if set(returned) != set(identifiers):
+            raise RuntimeError("Een deel van de iNaturalist-opmerkingen ontbreekt; index niet vrijgegeven.")
+        for observation_id, row in returned.items():
+            if row.get("comments_count") is not None and len(row.get("comments") or []) < int(row["comments_count"]):
+                raise RuntimeError(f"Niet alle opmerkingen voor #{observation_id} werden teruggegeven.")
+            links[observation_id] = links_from_comments(row.get("comments"))
+    return links
+
+
+def inat_details(identifiers):
+    global LAST_REQUEST
+    endpoint = API + "/" + ",".join(map(str, identifiers))
+    for attempt in range(5):
+        time.sleep(max(0, 1.1 - (time.monotonic() - LAST_REQUEST)))
+        LAST_REQUEST = time.monotonic()
+        try:
+            response = SESSION.get(endpoint, timeout=60)
+            if response.status_code == 429 or response.status_code >= 500:
+                time.sleep(2 ** attempt)
+                continue
+            response.raise_for_status()
+            return response.json()["results"]
+        except (requests.RequestException, KeyError):
+            if attempt == 4:
+                raise
+            time.sleep(2 ** attempt)
+    raise RuntimeError("iNaturalist gaf geen opmerkingen terug")
+
+
 def pages(params, first_day, last_day):
     """Split dense date ranges so no iNaturalist 10k offset cap truncates results."""
     base = {**params, "d1": first_day.isoformat(), "d2": last_day.isoformat(),
@@ -119,11 +176,14 @@ def embed(rows):
             yield item, vector
 
 
-def compact(item):
+def compact(item, linked_ids=()):
     photo = (item.get("photos") or [{}])[0]
     taxon = item.get("taxon") or {}
     return {
         "id": item["id"], "observed_on": item.get("observed_on"),
+        "needs_species_id": is_not_identified_to_species(item),
+        "quality_grade": item.get("quality_grade"),
+        "comment_links": list(linked_ids),
         "taxon": {"rank": taxon.get("rank"), "name": taxon.get("name"),
                   "preferred_common_name": taxon.get("preferred_common_name")},
         "photos": [{"url": str(photo.get("medium_url") or photo.get("url") or "").replace("square", "medium"),
@@ -134,28 +194,34 @@ def compact(item):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--area", required=True)
+    parser.add_argument("--area")
+    parser.add_argument("--area-json-env")
+    parser.add_argument("--area-label")
     parser.add_argument("--order-id", type=int, required=True)
     parser.add_argument("--order-name", required=True)
     parser.add_argument("--start", type=date.fromisoformat, required=True)
     parser.add_argument("--end", type=date.fromisoformat, required=True)
     args = parser.parse_args()
-    geometry = read_area(args.area)
+    if bool(args.area) == bool(args.area_json_env):
+        parser.error("Geef precies een van --area en --area-json-env op")
+    geometry = read_area_input(args.area, args.area_json_env)
+    area_name = args.area_label or args.area
     box = bounds_for_api(geometry)
     south, west, north, east = box
     existing = supabase("index_coverage", "GET",
-                        params={"select": "*", "name": "eq." + args.area,
+                        params={"select": "*", "name": "eq." + area_name,
                                 "order_id": "eq." + str(args.order_id),
                                 "first_date": "eq." + args.start.isoformat(),
                                 "last_date": "eq." + args.end.isoformat()})
     if existing:
         coverage_id = existing[0]["id"]
         supabase("index_coverage", "PATCH",
-                 {"geometry": geometry, "status": "building", "updated_at": date.today().isoformat()},
+                 {"geometry": geometry, "status": "building", "model_version": MODEL_VERSION,
+                  "updated_at": date.today().isoformat()},
                  {"id": "eq." + str(coverage_id)})
     else:
         coverage_id = supabase("index_coverage", "POST", {
-            "name": args.area, "order_id": args.order_id, "order_name": args.order_name,
+            "name": area_name, "order_id": args.order_id, "order_name": args.order_name,
             "geometry": geometry, "first_date": args.start.isoformat(),
             "last_date": args.end.isoformat(), "status": "building",
             "model_version": MODEL_VERSION,
@@ -168,16 +234,40 @@ def main():
         for batch, total in pages(params, args.start, args.end):
             scanned += total
             eligible = [row for row in observations_in_geometry(batch, geometry)
-                        if row.get("photos") and is_not_identified_to_species(row)]
+                        if row.get("photos") and (row.get("taxon") or {}).get("id")]
+            links = comment_links(eligible)
+            saved = {}
+            if eligible:
+                identifiers = ",".join(str(int(row["id"])) for row in eligible)
+                previous = supabase("index_observations", "GET", params={
+                    "select": "id,observation,embedding,model_version",
+                    "id": f"in.({identifiers})",
+                })
+                saved = {int(row["id"]): row for row in previous}
+            vectors = []
+            fresh = []
+            for item in eligible:
+                prior = saved.get(int(item["id"]))
+                same_photo = (prior and (prior.get("observation") or {}).get("photos")
+                              and prior["observation"]["photos"][0].get("url")
+                              == compact(item)["photos"][0]["url"])
+                if (same_photo and str(prior.get("model_version", "")).startswith(
+                        "efficientnet_b0_imagenet1k_v1")):
+                    vectors.append((item, prior["embedding"]))
+                else:
+                    fresh.append(item)
+            vectors.extend((item, "[" + ",".join(map(str, vector.tolist())) + "]")
+                           for item, vector in embed(fresh))
             records = []
-            for item, vector in embed(eligible):
+            for item, vector in vectors:
                 coords = (item.get("geojson") or {}).get("coordinates")
                 if not coords or len(coords) < 2 or not item.get("observed_on"):
                     continue
                 records.append({
                     "id": item["id"], "order_id": args.order_id, "observed_on": item["observed_on"],
                     "longitude": coords[0], "latitude": coords[1],
-                    "observation": compact(item), "embedding": "[" + ",".join(map(str, vector.tolist())) + "]",
+                    "observation": compact(item, links.get(int(item["id"]), [])),
+                    "embedding": vector,
                     "model_version": MODEL_VERSION,
                 })
             failed += len(eligible) - len(records)

@@ -1,6 +1,24 @@
-# Waarnemingen Gelijkeniszoeker 0.5.2
+# Waarnemingen Gelijkeniszoeker 0.6
 
-De app vergelijkt foto's van iNaturalist-waarnemingen die wel tot een gekozen orde, maar nog niet tot een soort zijn geïdentificeerd. De vergelijking gebruikt vooraf opgeslagen beeldkenmerken. Een score van 80 of 90 is een modelschaal, geen kans op dezelfde soort.
+De app zoekt voor waarnemingen zonder soortnaam in een gekozen gebied en orde naar overeenkomsten met **alle** gefotografeerde waarnemingen uit die orde in de vergelijkingszone: ook al tot soort benoemde waarnemingen en Research Grade. De vergelijking gebruikt vooraf opgeslagen beeldkenmerken. Een score van 80 of 90 is een modelschaal, geen kans op dezelfde soort.
+
+## Overstap vanaf 0.5.2
+
+Vervang `app.py`, `indexed.py`, `indexer.py` en `.github/workflows/build-index.yml` en voeg `dispatch.py` toe. De SQL-tabellen hoeven niet te veranderen. De oude index bevat uitsluitend waarnemingen zonder soortnaam; **bouw die opnieuw op** met deze versie. Totdat dat is gebeurd toont de app geen vergelijking voor dat gebied. De eerste nieuwe indexeeractie haalt ook in groepen bestaande iNaturalist-opmerkingen op; de vergelijking zelf vraagt niets op bij iNaturalist.
+
+De app slaat de gevonden verwijzingen op als momentopname. Als buiten de app een opmerking is geplaatst ná de indexeeractie, wordt die bij de volgende herbouw herkend. Beoordelingen die in de bestaande Supabase-tabel als afgerond zijn opgeslagen verdwijnen direct uit de lijst. Tijdens een nog niet afgeronde tweestapsbeoordeling blijft het paar zichtbaar, zodat je de tweede opmerking kunt plaatsen.
+
+### Zelf een index starten uit de app
+
+Eenmalige instelling: maak op GitHub een **fine-grained personal access token** voor uitsluitend `jeanpaulboerekamps/Observations-comparison` met repository permission **Actions: Read and write**. Zet de token uitsluitend in **Streamlit → Manage app → Settings → Secrets**, onder je bestaande instellingen:
+
+```toml
+GITHUB_DISPATCH_TOKEN = "github_pat_..."
+```
+
+Gebruik ook je bestaande `REVIEW_PASSPHRASE` (minimaal 16 tekens) en `SUPABASE_SECRET_KEY` als afscherming in Streamlit Secrets. Deel de token niet en plaats die niet in GitHub-bestanden. Ontgrendel de beoordeling in de app, selecteer een gebied, een orde, een periode en een zoekafstand en klik **Index voor dit gebied en deze orde opbouwen**. De knop verschijnt als er geen volledige passende index is. De app stuurt de gebiedsgrens naar de bestaande GitHub-actie; een los GeoJSON-bestand uploaden is dan niet nodig. Nadat de actie klaar is, ververs je de app. Bij zeer complexe gebiedsgrenzen vraagt de app de grens eerst te vereenvoudigen.
+
+Ook een handmatig via GitHub gestarte actie blijft mogelijk met `area_file`. Er is geen nieuwe iNaturalist-autorisatie nodig.
 
 ## Instellen
 
@@ -40,7 +58,7 @@ Voor automatisch plaatsen is een eigen iNaturalist OAuth-applicatie nodig. iNatu
 2. Open **GitHub → Actions → Build observation index → Run workflow**. Vul het GeoJSON-pad, het iNaturalist-taxon-ID van de orde, een naam en een begin- en einddatum in. Begin met een klein gebied en een beperkte periode.
 3. Wacht tot de workflow groen is. Daarna kun je het begin- en zoekgebied binnen de geïndexeerde zone kiezen in Streamlit. Bij een fout krijgt de index geen status 'complete'; je kunt dezelfde workflow opnieuw starten.
 
-De app meldt als de zone of periode niet volledig binnen één gereed indexgebied ligt. Boven 20.000 vergelijkingswaarnemingen vraagt hij om een kleiner gebied of kortere periode. De paren zijn verdeeld over pagina's van tien; de CSV bevat ze allemaal.
+De app meldt als de zone of periode niet volledig binnen één gereed indexgebied ligt. Boven 20.000 vergelijkingswaarnemingen vraagt hij om een kleiner gebied of kortere periode. Ook een nieuwe index met veel waarnemingen kan meer schijfruimte en rekentijd vragen dan beschikbaar is op de gratis lagen. De paren zijn verdeeld over pagina's van tien; de CSV bevat ze allemaal.
 
 ## Foto's en rechten
 
