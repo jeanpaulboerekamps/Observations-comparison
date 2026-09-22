@@ -19,7 +19,7 @@ from indexed import MODEL_VERSION
 
 API = "https://api.inaturalist.org/v1/observations"
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "Observations-comparison/0.6.1 (indexing; public observations)"})
+SESSION.headers.update({"User-Agent": "Observations-comparison/0.6.2 (indexing; public observations)"})
 LAST_REQUEST = 0.0
 
 
@@ -94,8 +94,9 @@ def comment_links(items):
     links = {}
     with_comments = [int(item["id"]) for item in items
                      if item.get("comments_count", 1) or item.get("comments")]
-    for start in range(0, len(with_comments), 50):
-        identifiers = with_comments[start:start + 50]
+    # /observations/{ids} rejects groups larger than 30 with HTTP 422.
+    for start in range(0, len(with_comments), 25):
+        identifiers = with_comments[start:start + 25]
         result = inat_details(identifiers)
         returned = {int(row["id"]): row for row in result}
         if set(returned) != set(identifiers):
@@ -155,6 +156,10 @@ def inat_details(identifiers):
             if response.status_code == 429 or response.status_code >= 500:
                 time.sleep(2 ** attempt)
                 continue
+            if response.status_code == 422 and len(identifiers) > 1:
+                half = len(identifiers) // 2
+                return (inat_details(identifiers[:half]) +
+                        inat_details(identifiers[half:]))
             response.raise_for_status()
             return response.json()["results"]
         except (requests.RequestException, KeyError):
