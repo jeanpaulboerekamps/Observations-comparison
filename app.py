@@ -17,7 +17,7 @@ from streamlit_folium import st_folium
 
 from core import buffer_geometry_km
 from dispatch import dispatch_index
-from review import (CHOICES, authorization_url, comment_body, exchange_code,
+from review import (CHOICES, NO_COMMENT_CHOICES, authorization_url, comment_body, exchange_code,
                     load_reviews, manual_review_record, pair_ids, publish_review, save_review)
 
 st.set_page_config(
@@ -228,7 +228,7 @@ def preview_map(target_geometry, search_geometry, distance_km):
 init_state()
 restore_remembered_area()
 
-st.markdown('<span class="release-badge">Prototype 0.6.1 · bijgewerkte kruisverwijzingen</span>', unsafe_allow_html=True)
+st.markdown('<span class="release-badge">Prototype 0.6.3 · vijf beoordelingskeuzes</span>', unsafe_allow_html=True)
 st.title("🔎 Waarnemingen Gelijkeniszoeker")
 st.markdown(
     '<div class="intro"><b>Vind waarnemingen die mogelijk van dezelfde soort zijn.</b><br>'
@@ -622,7 +622,7 @@ if "index_pairs" in st.session_state:
                 render_observation(right)
             if manual_mode and prior:
                 st.info(f"Keuze: {CHOICES[prior['choice']][0]}")
-                if prior["choice"] == "unrelated":
+                if prior["choice"] in NO_COMMENT_CHOICES:
                     st.caption("Afgerond; er zijn geen opmerkingen nodig.")
                 elif prior["status"] == "complete":
                     st.caption("Je hebt aangegeven dat je beide opmerkingen hebt geplaatst.")
@@ -655,12 +655,12 @@ if "index_pairs" in st.session_state:
                 if confirmed and choice:
                     try:
                         save_manual_choice(database_url, review_key, manual_persistent,
-                                           ids, choice, "complete" if choice == "unrelated" else "pending")
+                                           ids, choice, "complete" if choice in NO_COMMENT_CHOICES else "pending")
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Keuze kon niet worden opgeslagen: {exc}")
                 elif confirmed:
-                    st.warning("Kies eerst één van de vier beoordelingen.")
+                    st.warning("Kies eerst één van de vijf beoordelingen.")
             elif prior:
                 st.info(f"Beoordeling: {CHOICES[prior['choice']][0]} · "
                         f"{('beide opmerkingen geplaatst' if prior['status'] == 'complete' else 'controle nodig' if prior['status'] == 'uncertain' else 'nog niet volledig')}.")
@@ -669,12 +669,12 @@ if "index_pairs" in st.session_state:
                     choice = st.radio("Jouw beoordeling", list(CHOICES),
                                       format_func=lambda k: CHOICES[k][0],
                                       index=None, key=f"choice_{ids[0]}_{ids[1]}")
-                    if choice in CHOICES and choice != "unrelated":
+                    if choice in CHOICES and choice not in NO_COMMENT_CHOICES:
                         st.caption("Opmerking op beide waarnemingen:")
                         st.code(comment_body(choice, ids[1]) + "\n" +
                                 comment_body(choice, ids[0]), language=None)
                     confirmed = st.form_submit_button(
-                        "Beoordeling opslaan en opmerkingen plaatsen" if choice != "unrelated" else "Beoordeling opslaan",
+                        "Beoordeling opslaan en opmerkingen plaatsen" if choice not in NO_COMMENT_CHOICES else "Beoordeling opslaan",
                     )
                 if confirmed and choice:
                     try:
@@ -686,7 +686,7 @@ if "index_pairs" in st.session_state:
                         st.error(f"Niet volledig verwerkt: {exc}. Controleer de opmerkingen op iNaturalist "
                                  "voordat je opnieuw probeert. De al geplaatste opmerking wordt niet herhaald.")
                 elif confirmed:
-                    st.warning("Kies eerst één van de vier beoordelingen.")
+                    st.warning("Kies eerst één van de vijf beoordelingen.")
             if prior and prior["status"] == "pending" and review_enabled:
                 if st.button("Ontbrekende opmerking opnieuw proberen", key=f"retry_{ids}"):
                     try:
@@ -707,4 +707,4 @@ if "index_pairs" in st.session_state:
                            "overeenkomsten.csv", "text/csv")
 
 st.divider()
-st.caption("Prototype 0.6.1 · vergelijking zonder iNaturalist-verzoeken · opmerkingen worden via de vernieuwingsactie bijgewerkt.")
+st.caption("Prototype 0.6.3 · vergelijking zonder iNaturalist-verzoeken · opmerkingen worden via de vernieuwingsactie bijgewerkt.")

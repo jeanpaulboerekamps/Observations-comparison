@@ -1,4 +1,12 @@
-# Waarnemingen Gelijkeniszoeker 0.6.1
+# Waarnemingen Gelijkeniszoeker 0.6.3
+
+## Vijfde beoordeling (0.6.3)
+
+Keuze 5 **Hier heb ik niets aan toe te voegen** rondt een paar af zonder iNaturalist-opmerkingen, net als keuze 4. Vervang `app.py` en `review.py`. Als blijvende beoordelingsopslag is ingesteld, voer dan ook `supabase/reviews.sql` nogmaals uit in de Supabase SQL Editor; het onderste deel van dat bestand verruimt de bestaande controle veilig voor keuze 5. Zonder blijvende opslag is die SQL-stap niet nodig.
+
+## Correctie vernieuwingsactie (0.6.2)
+
+iNaturalist accepteert via het detailadres maximaal 30 waarnemingen per verzoek. In 0.6.1 vroeg de vernieuwingsactie er 50 tegelijk op en stopte met HTTP 422. Vervang **alleen `indexer.py`** uit deze versie en start daarna de al toegevoegde actie **Refresh observation links** opnieuw. De actie vraagt nu maximaal 25 waarnemingen tegelijk op en splitst een groep alsnog op als iNaturalist HTTP 422 meldt. De bestaande index en instellingen blijven bruikbaar.
 
 ## Opmerkingen achteraf verversen (nieuw in 0.6.1)
 
@@ -43,7 +51,7 @@ De app meldt dat de index nog leeg is totdat er een indexeeractie klaar is.
 
 Het reeds uitgevoerde `supabase/reviews.sql` hoeft niet opnieuw uitgevoerd te worden. Je hoeft voor de eerste proef alleen `app.py` en `review.py` uit deze versie naar de hoofdmap van dezelfde GitHub-repository te uploaden. Open de Streamlit-app opnieuw, kies je gebied en start de vergelijking.
 
-Per paar kies je één van vier beoordelingen. Bij keuze 1, 2 of 3 toont de app **eerst één** Engelse tekst in een gewoon tekstvak en een knop naar de bijbehorende waarneming. Tik op een iPad in het tekstvak en kies **Selecteer alles → Kopieer**; de tekst loopt automatisch over meerdere regels. Plak de tekst op iNaturalist en ga terug naar het app-tabblad. Klik pas dan op **Ik heb de opmerking geplaatst**. Vervolgens verschijnt de tekst en link voor de tweede waarneming. Keuze 4 wordt direct afgerond, zonder opmerkingen. iNaturalist gebruikt het account waarmee je in je browser bent aangemeld; een link naar een waarneming kan niet zelf een ander account kiezen. Controleer je gebruikersnaam op de geopende iNaturalist-pagina voordat je plakt.
+Per paar kies je één van vijf beoordelingen. Bij keuze 1, 2 of 3 toont de app **eerst één** Engelse tekst in een gewoon tekstvak en een knop naar de bijbehorende waarneming. Tik op een iPad in het tekstvak en kies **Selecteer alles → Kopieer**; de tekst loopt automatisch over meerdere regels. Plak de tekst op iNaturalist en ga terug naar het app-tabblad. Klik pas dan op **Ik heb de opmerking geplaatst**. Vervolgens verschijnt de tekst en link voor de tweede waarneming. Keuze 4 en 5 worden direct afgerond, zonder opmerkingen. iNaturalist gebruikt het account waarmee je in je browser bent aangemeld; een link naar een waarneming kan niet zelf een ander account kiezen. Controleer je gebruikersnaam op de geopende iNaturalist-pagina voordat je plakt.
 
 Zonder extra instelling bewaart de app deze voortgang alleen zolang het tabblad open is. Je kunt met **Alle paren en voortgang downloaden als CSV** een overzicht bewaren. Voor blijvende opslag in de al aangemaakte Supabase-tabel voeg je in **Streamlit → Manage app → Settings → Secrets** onder de bestaande twee Supabase-regels ook deze twee regels toe:
 

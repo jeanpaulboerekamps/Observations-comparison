@@ -17,7 +17,9 @@ CHOICES = {
     "same_species": ("Waarschijnlijk dezelfde soort", "These observations may show the same species."),
     "closely_related": ("Waarschijnlijk nauw verwant", "These observations may show closely related organisms."),
     "unrelated": ("Waarschijnlijk geen verwantschap", None),
+    "nothing_to_add": ("Hier heb ik niets aan toe te voegen", None),
 }
+NO_COMMENT_CHOICES = {key for key, (_, sentence) in CHOICES.items() if sentence is None}
 INAT = "https://www.inaturalist.org"
 API = "https://api.inaturalist.org/v1"
 
@@ -163,7 +165,7 @@ def publish_review(url, key, access_token, reviewer_id, left_id, right_id, choic
               "status": existing.get("status") if existing else "pending"}
     if existing and review["status"] in ("complete", "uncertain"):
         return review
-    if choice == "unrelated":
+    if choice in NO_COMMENT_CHOICES:
         review["status"] = "complete"
         return save_review(url, key, review)
     review = save_review(url, key, review)

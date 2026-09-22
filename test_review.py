@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-from review import (CHOICES, comment_body, manual_review_record, pair_ids,
+from review import (CHOICES, NO_COMMENT_CHOICES, comment_body, manual_review_record, pair_ids,
                     publish_review, _read_state, _signed_state)
 
 
@@ -13,6 +13,8 @@ class ReviewTests(unittest.TestCase):
             self.assertIn("/observations/8", comment_body(choice, 8))
         with self.assertRaises(ValueError):
             comment_body("unrelated", 8)
+        with self.assertRaises(ValueError):
+            comment_body("nothing_to_add", 8)
 
     def test_state_is_signed_and_expires(self):
         state = _signed_state("test-secret", "area-token")
@@ -51,9 +53,11 @@ class ReviewTests(unittest.TestCase):
 
     @patch("review.create_comment")
     @patch("review.save_review", side_effect=lambda url, key, review: dict(review))
-    def test_no_comments_for_unrelated(self, save, post):
-        result = publish_review("url", "secret", "token", 7, 3, 8, "unrelated")
-        self.assertEqual(result["status"], "complete")
+    def test_no_comments_for_final_choices(self, save, post):
+        self.assertEqual(NO_COMMENT_CHOICES, {"unrelated", "nothing_to_add"})
+        for choice in NO_COMMENT_CHOICES:
+            result = publish_review("url", "secret", "token", 7, 3, 8, choice)
+            self.assertEqual(result["status"], "complete")
         post.assert_not_called()
 
 
