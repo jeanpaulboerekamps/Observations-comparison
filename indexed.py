@@ -29,7 +29,7 @@ def get_rows(url, key, table, params):
 
 def coverage(url, key):
     return get_rows(url, key, "index_coverage",
-                    {"select": "id,name,order_id,order_name,geometry,first_date,last_date,model_version,indexed_count",
+                    {"select": "id,name,order_id,order_name,geometry,first_date,last_date,model_version,indexed_count,updated_at",
                      "status": "eq.complete"})
 
 
@@ -45,3 +45,9 @@ def parse_embedding(value):
     if isinstance(value, str):
         return json.loads(value)
     return value
+
+
+def already_linked_pair(left, right):
+    """Ignore a pair when either observation comments on that exact partner."""
+    return (int(right["id"]) in (left["observation"].get("comment_links") or [])
+            or int(left["id"]) in (right["observation"].get("comment_links") or []))

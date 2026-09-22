@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 import math
 import os
 import re
+import sys
 import time
 
 import numpy as np
@@ -18,7 +19,7 @@ from indexed import MODEL_VERSION
 
 API = "https://api.inaturalist.org/v1/observations"
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "Observations-comparison/0.4 (indexing; public observations)"})
+SESSION.headers.update({"User-Agent": "Observations-comparison/0.6.1 (indexing; public observations)"})
 LAST_REQUEST = 0.0
 
 
@@ -104,6 +105,43 @@ def comment_links(items):
                 raise RuntimeError(f"Niet alle opmerkingen voor #{observation_id} werden teruggegeven.")
             links[observation_id] = links_from_comments(row.get("comments"))
     return links
+
+
+def refresh_comment_links():
+    """Refresh links from cached observations without loading photos or recomputing vectors."""
+    examined = updated = offset = 0
+    while True:
+        rows = supabase("index_observations", "GET", params={
+            "select": "id,observation", "model_version": "eq." + MODEL_VERSION,
+            "order": "id.asc", "limit": 200, "offset": offset,
+        })
+        if not rows:
+            break
+        # Details are requested in batches and at most once per second.
+        fresh = comment_links([{"id": row["id"]} for row in rows])
+        for row in rows:
+            observation_id = int(row["id"])
+            observation = row["observation"]
+            new_links = fresh.get(observation_id, [])
+            if sorted(observation.get("comment_links") or []) == new_links:
+                continue
+            new_observation = {**observation, "comment_links": new_links}
+            supabase("index_observations", "PATCH", {"observation": new_observation},
+                     {"id": "eq." + str(observation_id)})
+            updated += 1
+        examined += len(rows)
+        offset += len(rows)
+        print(f"Opmerkingen gecontroleerd: {examined}, bijgewerkt: {updated}", flush=True)
+    if updated:
+        coverages = supabase("index_coverage", "GET", params={
+            "select": "id", "model_version": "eq." + MODEL_VERSION,
+            "status": "eq.complete",
+        })
+        for coverage in coverages:
+            supabase("index_coverage", "PATCH",
+                     {"updated_at": datetime.now(timezone.utc).isoformat()},
+                     {"id": "eq." + str(coverage["id"])})
+    print(f"Gereed: {examined} waarnemingen, {updated} gewijzigde verwijzingen.", flush=True)
 
 
 def inat_details(identifiers):
@@ -288,4 +326,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--refresh-links" in sys.argv:
+        if len(sys.argv) != 2:
+            raise SystemExit("Gebruik alleen --refresh-links")
+        refresh_comment_links()
+    else:
+        main()

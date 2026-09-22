@@ -1,4 +1,10 @@
-# Waarnemingen Gelijkeniszoeker 0.6
+# Waarnemingen Gelijkeniszoeker 0.6.1
+
+## Opmerkingen achteraf verversen (nieuw in 0.6.1)
+
+De index van 0.6 hoeft niet opnieuw gebouwd te worden. Vervang alleen `indexer.py`, `indexed.py` en `app.py`, en voeg `.github/workflows/refresh-links.yml` toe op precies dat pad. Open vervolgens **GitHub → Actions → Refresh observation links → Run workflow** en ververs na de groene run de vergelijking in de app met **Alle geïndexeerde waarnemingen vergelijken**. Je hoeft geen gebied, orde of datums in te vullen. De actie controleert bestaande iNaturalist-opmerkingen in groepen en wijzigt alleen opgeslagen verwijzingen; foto’s en beeldkenmerken blijven bewaard. Daarna is een dagelijkse controle gepland. GitHub kan geplande runs vertragen of bij langere inactiviteit uitschakelen; de knop in Actions blijft als handmatige mogelijkheid beschikbaar.
+
+De app sluit uitsluitend een paar uit als in een opmerking op minstens een van beide waarnemingen de **link naar de andere waarneming in dat paar** staat. Een verwijzing naar een derde waarneming sluit dit paar niet uit. Handmatige beoordelingen kunnen daarnaast blijvend worden bewaard door de bestaande `SUPABASE_SECRET_KEY` en een eigen `REVIEW_PASSPHRASE` in de Streamlit-secrets te zetten (zie verderop). Zonder die instelling blijven beoordelingen alleen in het geopende tabblad bewaard.
 
 De app zoekt voor waarnemingen zonder soortnaam in een gekozen gebied en orde naar overeenkomsten met **alle** gefotografeerde waarnemingen uit die orde in de vergelijkingszone: ook al tot soort benoemde waarnemingen en Research Grade. De vergelijking gebruikt vooraf opgeslagen beeldkenmerken. Een score van 80 of 90 is een modelschaal, geen kans op dezelfde soort.
 
@@ -6,7 +12,7 @@ De app zoekt voor waarnemingen zonder soortnaam in een gekozen gebied en orde na
 
 Vervang `app.py`, `indexed.py`, `indexer.py` en `.github/workflows/build-index.yml` en voeg `dispatch.py` toe. De SQL-tabellen hoeven niet te veranderen. De oude index bevat uitsluitend waarnemingen zonder soortnaam; **bouw die opnieuw op** met deze versie. Totdat dat is gebeurd toont de app geen vergelijking voor dat gebied. De eerste nieuwe indexeeractie haalt ook in groepen bestaande iNaturalist-opmerkingen op; de vergelijking zelf vraagt niets op bij iNaturalist.
 
-De app slaat de gevonden verwijzingen op als momentopname. Als buiten de app een opmerking is geplaatst ná de indexeeractie, wordt die bij de volgende herbouw herkend. Beoordelingen die in de bestaande Supabase-tabel als afgerond zijn opgeslagen verdwijnen direct uit de lijst. Tijdens een nog niet afgeronde tweestapsbeoordeling blijft het paar zichtbaar, zodat je de tweede opmerking kunt plaatsen.
+De app slaat de gevonden verwijzingen op als momentopname. Als buiten de app een opmerking is geplaatst ná de indexeeractie, wordt die na **Refresh observation links** herkend. Beoordelingen die in de bestaande Supabase-tabel als afgerond zijn opgeslagen verdwijnen direct uit de lijst. Tijdens een nog niet afgeronde tweestapsbeoordeling blijft het paar zichtbaar, zodat je de tweede opmerking kunt plaatsen.
 
 ### Zelf een index starten uit de app
 

@@ -228,7 +228,7 @@ def preview_map(target_geometry, search_geometry, distance_km):
 init_state()
 restore_remembered_area()
 
-st.markdown('<span class="release-badge">Prototype 0.6 · uitgebreide vergelijkingsindex</span>', unsafe_allow_html=True)
+st.markdown('<span class="release-badge">Prototype 0.6.1 · bijgewerkte kruisverwijzingen</span>', unsafe_allow_html=True)
 st.title("🔎 Waarnemingen Gelijkeniszoeker")
 st.markdown(
     '<div class="intro"><b>Vind waarnemingen die mogelijk van dezelfde soort zijn.</b><br>'
@@ -426,7 +426,8 @@ if st.session_state.show_area_creator:
 
 st.divider()
 st.subheader("Zoekinstellingen")
-from indexed import MODEL_VERSION, coverage as load_coverage, observations as load_indexed, parse_embedding
+from indexed import (MODEL_VERSION, already_linked_pair, coverage as load_coverage,
+                     observations as load_indexed, parse_embedding)
 from shapely.geometry import Point
 
 def settings():
@@ -510,7 +511,8 @@ if has_area:
             st.info("De beheerder moet eenmalig GITHUB_DISPATCH_TOKEN en REVIEW_PASSPHRASE "
                     "instellen in de Streamlit-secrets om vanuit de app een index te starten.")
 
-signature = (active_area, order_id, distance_km, start, end, threshold)
+signature = (active_area, order_id, distance_km, start, end, threshold,
+             tuple(sorted((row["id"], row["updated_at"]) for row in matching)))
 if st.session_state.get("index_signature") != signature:
     st.session_state.pop("index_pairs", None)
     st.session_state.index_signature = signature
@@ -551,8 +553,7 @@ if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary",
                         right = others[int(j)]
                         if left["id"] == right["id"]:
                             continue
-                        if (int(right["id"]) in left["observation"].get("comment_links", [])
-                                or int(left["id"]) in right["observation"].get("comment_links", [])):
+                        if already_linked_pair(left, right):
                             continue
                         key = tuple(sorted((left["id"], right["id"])))
                         if key in seen:
@@ -706,4 +707,4 @@ if "index_pairs" in st.session_state:
                            "overeenkomsten.csv", "text/csv")
 
 st.divider()
-st.caption("Prototype 0.6 · vergelijking zonder iNaturalist-verzoeken · opmerkingen worden bij het indexeren ingelezen.")
+st.caption("Prototype 0.6.1 · vergelijking zonder iNaturalist-verzoeken · opmerkingen worden via de vernieuwingsactie bijgewerkt.")
