@@ -1,4 +1,8 @@
-# Waarnemingen Gelijkeniszoeker 0.6.3
+# Waarnemingen Gelijkeniszoeker 0.6.4
+
+## Reeds gekoppelde paren direct uitsluiten (0.6.4)
+
+Na de lokale beeldvergelijking controleert de app de openbare iNaturalist-opmerkingen van uitsluitend de waarnemingen die in sterke kandidaatparen voorkomen. Als een opmerking bij een van beide waarnemingen naar de exacte andere waarneming verwijst, verschijnt dat paar niet in de resultaten. Daardoor hoeven keuzes 1, 2 en 3 na een herstart niet opnieuw te worden behandeld, ook wanneer de geplande vernieuwingsactie nog niet heeft gedraaid. Foto's en beeldkenmerken worden hierbij niet opnieuw opgehaald. Vervang alleen `app.py` en `indexed.py`; er is geen SQL-actie of nieuwe index nodig.
 
 ## Vijfde beoordeling (0.6.3)
 

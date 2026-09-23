@@ -228,7 +228,7 @@ def preview_map(target_geometry, search_geometry, distance_km):
 init_state()
 restore_remembered_area()
 
-st.markdown('<span class="release-badge">Prototype 0.6.3 · vijf beoordelingskeuzes</span>', unsafe_allow_html=True)
+st.markdown('<span class="release-badge">Prototype 0.6.4 · actuele kruisverwijzingen</span>', unsafe_allow_html=True)
 st.title("🔎 Waarnemingen Gelijkeniszoeker")
 st.markdown(
     '<div class="intro"><b>Vind waarnemingen die mogelijk van dezelfde soort zijn.</b><br>'
@@ -427,6 +427,7 @@ if st.session_state.show_area_creator:
 st.divider()
 st.subheader("Zoekinstellingen")
 from indexed import (MODEL_VERSION, already_linked_pair, coverage as load_coverage,
+                     current_comment_links, currently_linked_pair,
                      observations as load_indexed, parse_embedding)
 from shapely.geometry import Point
 
@@ -561,6 +562,25 @@ if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary",
                         seen.add(key)
                         pairs.append((float(scores[i, j]), left["observation"], right["observation"]))
                 pairs.sort(key=lambda item: item[0], reverse=True)
+            if pairs:
+                status.update(label="Bestaande kruisverwijzingen controleren…")
+                pair_observation_ids = {
+                    int(observation["id"])
+                    for _, left, right in pairs
+                    for observation in (left, right)
+                }
+                try:
+                    fresh_links = current_comment_links(pair_observation_ids)
+                    before = len(pairs)
+                    pairs = [pair for pair in pairs
+                             if not currently_linked_pair(pair[1], pair[2], fresh_links)]
+                    removed = before - len(pairs)
+                    if removed:
+                        st.write(f"{removed} eerder gekoppelde paren overgeslagen.")
+                except Exception as exc:
+                    st.warning("De actuele opmerkingen konden niet volledig worden gecontroleerd. "
+                               "De opgeslagen kruisverwijzingen zijn wel toegepast; probeer de "
+                               f"vergelijking later nogmaals. ({exc})")
             st.session_state.index_pairs = pairs
             st.session_state.index_counts = (len(targets), len(others))
             status.update(label="Vergelijking gereed", state="complete")
@@ -707,4 +727,4 @@ if "index_pairs" in st.session_state:
                            "overeenkomsten.csv", "text/csv")
 
 st.divider()
-st.caption("Prototype 0.6.3 · vergelijking zonder iNaturalist-verzoeken · opmerkingen worden via de vernieuwingsactie bijgewerkt.")
+st.caption("Prototype 0.6.4 · beeldvergelijking uit de index · actuele kruisverwijzingen worden voor sterke paren gecontroleerd.")
