@@ -66,6 +66,7 @@ def init_state():
         "comparison_vectors": None,
         "search_meta": {},
         "manual_reviews": {},
+        "index_access": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -228,7 +229,7 @@ def preview_map(target_geometry, search_geometry, distance_km):
 init_state()
 restore_remembered_area()
 
-st.markdown('<span class="release-badge">Prototype 0.6.4 · actuele kruisverwijzingen</span>', unsafe_allow_html=True)
+st.markdown('<span class="release-badge">Prototype 0.7.0 · zoekgebied uitbreiden vanuit de app</span>', unsafe_allow_html=True)
 st.title("🔎 Waarnemingen Gelijkeniszoeker")
 st.markdown(
     '<div class="intro"><b>Vind waarnemingen die mogelijk van dezelfde soort zijn.</b><br>'
@@ -450,8 +451,14 @@ if not coverages:
 
 orders = {int(item["order_id"]): item["order_name"] for item in coverages}
 order_id = st.selectbox("1. Orde (verplicht)", sorted(orders), format_func=lambda value: orders[value])
-distance_km = st.radio("2. Zoekafstand rondom het geselecteerde gebied", [0, 100, 1000],
-                       index=0, format_func=lambda n: f"{n} km", horizontal=True)
+distance_km = st.select_slider(
+    "2. Zoekafstand rondom het geselecteerde gebied",
+    options=[0, 10, 25, 50, 100, 250, 500, 1000],
+    value=0,
+    format_func=lambda n: f"{n} km",
+    help="De waarnemingen in het gekozen gebied worden vergeleken met waarnemingen "
+         "tot deze afstand buiten de gebiedsgrens.",
+)
 available = [item for item in coverages if int(item["order_id"]) == order_id
              and item["model_version"] == MODEL_VERSION]
 all_for_order = [item for item in coverages if int(item["order_id"]) == order_id]
@@ -482,35 +489,53 @@ matching = ([item for item in available
              and date.fromisoformat(item["last_date"]) >= end
              and shape(item["geometry"]).covers(shape(search_geometry))] if has_area else [])
 if has_area and not matching:
-    st.warning("Voor dit gebied, de zoekafstand en periode is nog geen volledige index beschikbaar. "
-               "Een eerdere index met alleen ongedetermineerde waarnemingen moet opnieuw worden opgebouwd.")
+    st.warning("Voor dit gebied, deze zoekafstand en periode is nog geen volledige index beschikbaar. "
+               "Open hieronder ‘Index beheren’ om de uitbreiding vanuit de app te laten opbouwen.")
 if has_area:
     github_token = st.secrets.get("GITHUB_DISPATCH_TOKEN", "")
+    index_password = st.secrets.get("INDEX_PASSPHRASE", "")
+    index_configured = bool(github_token and len(index_password) >= 16)
     with st.expander("Index beheren", expanded=not bool(matching)):
-        if github_token and manual_persistent and manual_access:
+        if index_configured and st.session_state.index_access:
+            st.success("Indexbeheer ontgrendeld.")
+            if st.button("Indexbeheer vergrendelen", key="lock_index_manager"):
+                st.session_state.index_access = False
+                st.rerun()
             dispatch_signature = (active_area, order_id, distance_km, start, end)
             previously_started = st.session_state.get("dispatched_index") == dispatch_signature
-            if previously_started:
-                st.info("De indexeeractie is gestart. Ververs de pagina wanneer de actie klaar is.")
+            if matching and previously_started:
+                st.session_state.pop("dispatched_index", None)
+                previously_started = False
+            if previously_started and not matching:
+                st.info("De uitbreiding wordt op de achtergrond opgebouwd. Dit kan enkele minuten duren.")
+                if st.button("🔄 Controleren of de uitbreiding klaar is", key="check_index_ready"):
+                    st.rerun()
             if matching:
-                st.caption("Een nieuwe indexeeractie haalt ook nieuwe opmerkingen op, "
-                           "en gebruikt opgeslagen beeldkenmerken opnieuw als de foto ongewijzigd is.")
-            if st.button("🗂️ Index voor dit gebied en deze orde " +
-                         ("vernieuwen" if matching else "opbouwen"),
-                         disabled=previously_started):
+                st.info(f"De index dekt dit gebied met een zoekafstand van {distance_km} km.")
+            build_label = ("🗂️ Basisindex opbouwen" if distance_km == 0 else
+                           f"🗂️ Uitbreiding tot {distance_km} km opbouwen")
+            if not matching and st.button(build_label, disabled=previously_started):
                 try:
-                    run_url = dispatch_index(github_token, search_geometry, order_id,
-                                             orders[order_id], start, end)
+                    dispatch_index(github_token, search_geometry, order_id,
+                                   orders[order_id], start, end)
                     st.session_state.dispatched_index = dispatch_signature
-                    st.success("De indexeeractie is gestart; je kunt de app later verversen.")
-                    st.link_button("Voortgang bekijken", run_url)
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"De indexeeractie kon niet worden gestart: {exc}")
-        elif github_token and manual_persistent:
-            st.info("Ontgrendel hierboven de beoordeling om een indexeeractie te starten.")
+        elif index_configured:
+            with st.form("index_manager_login"):
+                entered = st.text_input("Toegangscode voor indexbeheer", type="password")
+                unlock = st.form_submit_button("Indexbeheer ontgrendelen")
+            if unlock:
+                if hmac.compare_digest(entered, index_password):
+                    st.session_state.index_access = True
+                    st.rerun()
+                else:
+                    st.error("De toegangscode klopt niet.")
         else:
-            st.info("De beheerder moet eenmalig GITHUB_DISPATCH_TOKEN en REVIEW_PASSPHRASE "
-                    "instellen in de Streamlit-secrets om vanuit de app een index te starten.")
+            st.info("De beheerder moet eenmalig GITHUB_DISPATCH_TOKEN en INDEX_PASSPHRASE "
+                    "instellen in de Streamlit-secrets. Daarna kan een uitbreiding volledig "
+                    "vanuit deze app worden gestart.")
 
 signature = (active_area, order_id, distance_km, start, end, threshold,
              tuple(sorted((row["id"], row["updated_at"]) for row in matching)))
@@ -727,4 +752,4 @@ if "index_pairs" in st.session_state:
                            "overeenkomsten.csv", "text/csv")
 
 st.divider()
-st.caption("Prototype 0.6.4 · beeldvergelijking uit de index · actuele kruisverwijzingen worden voor sterke paren gecontroleerd.")
+st.caption("Prototype 0.7.0 · uitbreidingen worden vanuit de app gestart · actuele kruisverwijzingen worden gecontroleerd.")
