@@ -229,7 +229,7 @@ def preview_map(target_geometry, search_geometry, distance_km):
 init_state()
 restore_remembered_area()
 
-st.markdown('<span class="release-badge">Prototype 0.7.0 · zoekgebied uitbreiden vanuit de app</span>', unsafe_allow_html=True)
+st.markdown('<span class="release-badge">Prototype 0.7.1 · vergelijkingsdiagnostiek</span>', unsafe_allow_html=True)
 st.title("🔎 Waarnemingen Gelijkeniszoeker")
 st.markdown(
     '<div class="intro"><b>Vind waarnemingen die mogelijk van dezelfde soort zijn.</b><br>'
@@ -541,6 +541,7 @@ signature = (active_area, order_id, distance_km, start, end, threshold,
              tuple(sorted((row["id"], row["updated_at"]) for row in matching)))
 if st.session_state.get("index_signature") != signature:
     st.session_state.pop("index_pairs", None)
+    st.session_state.pop("index_diagnostics", None)
     st.session_state.index_signature = signature
 if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary",
              disabled=not matching):
@@ -566,27 +567,52 @@ if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary",
                          "Kies een kleiner gebied of kortere periode.")
                 st.stop()
             pairs = []
+            diagnostic_thresholds = (60, 65, 70, 75, 80, 85, 90)
+            threshold_hits = {cutoff: 0 for cutoff in diagnostic_thresholds}
+            diagnostics = {
+                "matrix_cells": len(targets) * len(others),
+                "comparable_cells": len(targets) * max(0, len(others) - 1),
+                "unique_possible_pairs": (
+                    len(targets) * max(0, len(others) - 1)
+                    - (len(targets) * max(0, len(targets) - 1)) // 2
+                ),
+                "stored_links_removed": 0,
+                "reverse_duplicates_removed": 0,
+                "fresh_links_removed": 0,
+                "pairs_before_fresh_check": 0,
+            }
             if targets and len(others) > 1:
                 b = np.asarray([parse_embedding(row["embedding"]) for row in others], dtype=np.float32)
                 a = np.asarray([parse_embedding(row["embedding"]) for row in targets], dtype=np.float32)
                 b /= np.maximum(np.linalg.norm(b, axis=1, keepdims=True), 1e-12)
                 a /= np.maximum(np.linalg.norm(a, axis=1, keepdims=True), 1e-12)
+                other_ids = np.asarray([int(row["id"]) for row in others])
                 seen = set()
                 for offset in range(0, len(a), 128):
                     scores = (a[offset:offset + 128] @ b.T) * 100
+                    block_ids = np.asarray(
+                        [int(row["id"]) for row in targets[offset:offset + len(scores)]]
+                    )
+                    non_self = block_ids[:, None] != other_ids[None, :]
+                    for cutoff in diagnostic_thresholds:
+                        threshold_hits[cutoff] += int(np.count_nonzero((scores >= cutoff) & non_self))
                     for i, j in zip(*np.where(scores >= threshold)):
                         left = targets[offset + int(i)]
                         right = others[int(j)]
                         if left["id"] == right["id"]:
                             continue
                         if already_linked_pair(left, right):
+                            diagnostics["stored_links_removed"] += 1
                             continue
                         key = tuple(sorted((left["id"], right["id"])))
                         if key in seen:
+                            diagnostics["reverse_duplicates_removed"] += 1
                             continue
                         seen.add(key)
                         pairs.append((float(scores[i, j]), left["observation"], right["observation"]))
                 pairs.sort(key=lambda item: item[0], reverse=True)
+            diagnostics["threshold_hits"] = threshold_hits
+            diagnostics["pairs_before_fresh_check"] = len(pairs)
             if pairs:
                 status.update(label="Bestaande kruisverwijzingen controleren…")
                 pair_observation_ids = {
@@ -600,6 +626,7 @@ if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary",
                     pairs = [pair for pair in pairs
                              if not currently_linked_pair(pair[1], pair[2], fresh_links)]
                     removed = before - len(pairs)
+                    diagnostics["fresh_links_removed"] = removed
                     if removed:
                         st.write(f"{removed} eerder gekoppelde paren overgeslagen.")
                 except Exception as exc:
@@ -608,6 +635,8 @@ if st.button("🔎 Alle geïndexeerde waarnemingen vergelijken", type="primary",
                                f"vergelijking later nogmaals. ({exc})")
             st.session_state.index_pairs = pairs
             st.session_state.index_counts = (len(targets), len(others))
+            diagnostics["final_pairs"] = len(pairs)
+            st.session_state.index_diagnostics = diagnostics
             status.update(label="Vergelijking gereed", state="complete")
     except Exception as exc:
         st.error(f"De vergelijking is mislukt: {exc}")
@@ -620,6 +649,41 @@ if "index_pairs" in st.session_state:
     a.metric("In het begingebied", target_count)
     b.metric("In de vergelijkingszone", candidate_count)
     c.metric("Sterke waarnemingsparen", len(pairs))
+    diagnostics = st.session_state.get("index_diagnostics")
+    if diagnostics:
+        with st.expander("Diagnostiek van deze vergelijking", expanded=True):
+            st.caption(
+                "De scoretabel is cumulatief: ≥60 bevat ook alle treffers boven 65, 70 enzovoort. "
+                "Zelfvergelijkingen zijn uitgesloten. Als twee waarnemingen beide in het begingebied "
+                "staan, telt de matrix hun twee zoekrichtingen nog afzonderlijk."
+            )
+            d1, d2, d3 = st.columns(3)
+            d1.metric("Berekende scorecellen", f"{diagnostics['matrix_cells']:,}".replace(",", "."))
+            d2.metric("Zonder zelfvergelijkingen", f"{diagnostics['comparable_cells']:,}".replace(",", "."))
+            d3.metric("Unieke mogelijke paren", f"{diagnostics['unique_possible_pairs']:,}".replace(",", "."))
+            threshold_table = pd.DataFrame([
+                {"Minimumscore": f"≥ {cutoff}", "Scoretreffers": count}
+                for cutoff, count in diagnostics["threshold_hits"].items()
+            ])
+            st.markdown("**Scoreverdeling vóór paarfilters**")
+            st.dataframe(threshold_table, hide_index=True, use_container_width=True)
+
+            selected_hits = diagnostics["threshold_hits"].get(threshold, 0)
+            after_stored_links = selected_hits - diagnostics["stored_links_removed"]
+            after_duplicates = after_stored_links - diagnostics["reverse_duplicates_removed"]
+            filter_table = pd.DataFrame([
+                {"Stap": f"Scoretreffers ≥ {threshold}", "Aantal": selected_hits},
+                {"Stap": "Na opgeslagen kruisverwijzingen", "Aantal": after_stored_links},
+                {"Stap": "Na samenvoegen van omgekeerde dubbele paren", "Aantal": after_duplicates},
+                {"Stap": "Na actuele kruisverwijzingen", "Aantal": diagnostics["final_pairs"]},
+            ])
+            st.markdown(f"**Filterstappen bij de gekozen minimumscore {threshold}**")
+            st.dataframe(filter_table, hide_index=True, use_container_width=True)
+            if diagnostics["fresh_links_removed"]:
+                st.caption(
+                    f"De actuele opmerkingencontrole verwijderde "
+                    f"{diagnostics['fresh_links_removed']} extra paren."
+                )
     if not pairs:
         st.info("Er zijn geen paren boven deze drempel gevonden in de volledig geïndexeerde zoekset.")
     else:
@@ -752,4 +816,4 @@ if "index_pairs" in st.session_state:
                            "overeenkomsten.csv", "text/csv")
 
 st.divider()
-st.caption("Prototype 0.7.0 · uitbreidingen worden vanuit de app gestart · actuele kruisverwijzingen worden gecontroleerd.")
+st.caption("Prototype 0.7.1 · scoreverdeling en filterstappen worden per vergelijking getoond.")

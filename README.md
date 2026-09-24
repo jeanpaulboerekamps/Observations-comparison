@@ -1,4 +1,10 @@
-# Waarnemingen Gelijkeniszoeker 0.6.4
+# Waarnemingen Gelijkeniszoeker 0.7.1
+
+## Vergelijkingsdiagnostiek (0.7.1)
+
+Na iedere vergelijking toont de app een uitklapbaar diagnostiekblok. Daarin staan het aantal berekende scorecellen, het aantal vergelijkingen na uitsluiting van dezelfde waarneming, het aantal unieke mogelijke paren en de cumulatieve aantallen scoretreffers bij 60, 65, 70, 75, 80, 85 en 90. Een tweede tabel laat voor de gekozen minimumscore zien hoeveel treffers overblijven na opgeslagen kruisverwijzingen, het samenvoegen van omgekeerde dubbele paren en de controle van actuele iNaturalist-opmerkingen.
+
+Voor deze wijziging hoef je alleen `app.py` te vervangen. De bestaande index en database blijven bruikbaar.
 
 ## Reeds gekoppelde paren direct uitsluiten (0.6.4)
 
