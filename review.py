@@ -101,8 +101,7 @@ def _database(url, secret_key, method, path, *, params=None, body=None):
                                          "Content-Type": "application/json"},
                                 params=params, json=body, timeout=25)
     if not response.ok:
-
-    raise RuntimeError(f"Supabase {response.status_code}: {response.text}")
+        raise RuntimeError(f"Supabase {response.status_code}: {response.text}")
     return response.json() if response.content else []
 
 
