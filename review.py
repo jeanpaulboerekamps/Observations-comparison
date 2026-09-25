@@ -100,7 +100,9 @@ def _database(url, secret_key, method, path, *, params=None, body=None):
                                          "Prefer": "resolution=merge-duplicates,return=representation",
                                          "Content-Type": "application/json"},
                                 params=params, json=body, timeout=25)
-    response.raise_for_status()
+    if not response.ok:
+
+    raise RuntimeError(f"Supabase {response.status_code}: {response.text}")
     return response.json() if response.content else []
 
 
