@@ -24,7 +24,8 @@ def get_rows(url, key, table, params):
     for page in range(10000):
         response = requests.get(endpoint, params={**params, "limit": 1000, "offset": page * 1000},
                                 headers=headers, timeout=40)
-        response.raise_for_status()
+        if not response.ok:
+            raise RuntimeError(f"Supabase {response.status_code}: {response.text}")
         batch = response.json()
         rows.extend(batch)
         if len(batch) < 1000:
