@@ -16,20 +16,54 @@ OBSERVATION_LINK = re.compile(
 
 
 def get_rows(url, key, table, params):
+    """Read Supabase rows in small pages.
+
+    Queries ordered by id.asc use keyset pagination instead of OFFSET.
+    Large OFFSET values can make PostgreSQL scan increasingly many rows and
+    eventually hit Supabase's statement timeout.
+    """
     if not url or not key:
         raise ValueError("Supabase URL of publishable key ontbreekt.")
+
     endpoint = url.rstrip("/") + "/rest/v1/" + table
     headers = {"apikey": key}
     rows = []
-    for page in range(10000):
-        response = requests.get(endpoint, params={**params, "limit": 1000, "offset": page * 1000},
-                                headers=headers, timeout=40)
+    page_size = 500
+    use_keyset = params.get("order") == "id.asc"
+    last_id = None
+
+    for page in range(20000):
+        page_params = {**params, "limit": page_size}
+
+        if use_keyset:
+            if last_id is not None:
+                page_params["id"] = f"gt.{last_id}"
+        else:
+            page_params["offset"] = page * page_size
+
+        response = requests.get(
+            endpoint,
+            params=page_params,
+            headers=headers,
+            timeout=40,
+        )
         if not response.ok:
-            raise RuntimeError(f"Supabase {response.status_code}: {response.text}")
+            raise RuntimeError(
+                f"Supabase {response.status_code}: {response.text}"
+            )
+
         batch = response.json()
         rows.extend(batch)
-        if len(batch) < 1000:
+
+        if len(batch) < page_size:
             return rows
+
+        if use_keyset:
+            new_last_id = int(batch[-1]["id"])
+            if last_id is not None and new_last_id <= last_id:
+                raise RuntimeError("Supabase-paginering liep vast op observation id.")
+            last_id = new_last_id
+
     raise RuntimeError("Index te groot voor deze zoekopdracht; beperk jaren of gebied.")
 
 
