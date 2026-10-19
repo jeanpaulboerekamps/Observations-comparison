@@ -1,8 +1,6 @@
 name: Refresh observation links
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '17 3 * * *'
 jobs:
   refresh:
     runs-on: ubuntu-latest
