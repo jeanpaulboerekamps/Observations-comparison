@@ -435,12 +435,22 @@ from shapely.geometry import Point
 def settings():
     return st.secrets.get("SUPABASE_URL", ""), st.secrets.get("SUPABASE_PUBLISHABLE_KEY", "")
 
+# Share cached index data across Streamlit reruns and users for one hour.
+# The cache is invalidated automatically when the selected dates/order change.
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=12)
+def cached_coverage(url, key):
+    return load_coverage(url, key)
+
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=12)
+def cached_index(url, key, order_id, start, end):
+    return load_indexed(url, key, order_id, start, end)
+
 try:
     database_url, publishable_key = settings()
     if not database_url or not publishable_key:
         st.error("Supabase is nog niet ingesteld. Voeg SUPABASE_URL en SUPABASE_PUBLISHABLE_KEY toe aan de Streamlit-secrets.")
         st.stop()
-    coverages = load_coverage(database_url, publishable_key)
+    coverages = cached_coverage(database_url, publishable_key)
 except Exception as exc:
     st.error(f"De opgeslagen index kon niet worden gelezen: {exc}")
     st.stop()

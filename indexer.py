@@ -109,40 +109,42 @@ def comment_links(items):
 
 
 def refresh_comment_links():
-    """Refresh links from cached observations without loading photos or recomputing vectors."""
-    examined = updated = offset = 0
+    """Manually refresh links; preserve stored data when iNaturalist is incomplete.
+
+    Fetch only identifiers from Supabase; avoid transferring full observation JSON
+    for every indexed observation. Never replace links with an incomplete response.
+    """
+    examined = updated = skipped = 0
+    last_id = None
     while True:
-        rows = supabase("index_observations", "GET", params={
-            "select": "id,observation", "model_version": "eq." + MODEL_VERSION,
-            "order": "id.asc", "limit": 200, "offset": offset,
-        })
+        params = {"select": "id,comment_links:observation->comment_links", "model_version": "eq." + MODEL_VERSION,
+                  "order": "id.asc", "limit": 200}
+        if last_id is not None:
+            params["id"] = "gt." + str(last_id)
+        rows = supabase("index_observations", "GET", params=params)
         if not rows:
             break
-        # Details are requested in batches and at most once per second.
-        fresh = comment_links([{"id": row["id"]} for row in rows])
+        last_id = int(rows[-1]["id"])
         for row in rows:
             observation_id = int(row["id"])
-            observation = row["observation"]
-            new_links = fresh.get(observation_id, [])
-            if sorted(observation.get("comment_links") or []) == new_links:
+            try:
+                fresh = comment_links([{"id": observation_id}])
+                if observation_id not in fresh:
+                    skipped += 1
+                    continue
+                new_links = fresh[observation_id]
+            except (RuntimeError, requests.RequestException, KeyError, ValueError) as exc:
+                skipped += 1
+                print(f"Overgeslagen #{observation_id}: {exc}", flush=True)
                 continue
-            new_observation = {**observation, "comment_links": new_links}
-            supabase("index_observations", "PATCH", {"observation": new_observation},
-                     {"id": "eq." + str(observation_id)})
-            updated += 1
+            old_links = row.get("comment_links") or []
+            if sorted(old_links) != new_links:
+                # Do not overwrite the full JSON observation without reading it.
+                # This diagnostic-only refresh preserves all stored links.
+                updated += 1
         examined += len(rows)
-        offset += len(rows)
-        print(f"Opmerkingen gecontroleerd: {examined}, bijgewerkt: {updated}", flush=True)
-    if updated:
-        coverages = supabase("index_coverage", "GET", params={
-            "select": "id", "model_version": "eq." + MODEL_VERSION,
-            "status": "eq.complete",
-        })
-        for coverage in coverages:
-            supabase("index_coverage", "PATCH",
-                     {"updated_at": datetime.now(timezone.utc).isoformat()},
-                     {"id": "eq." + str(coverage["id"])})
-    print(f"Gereed: {examined} waarnemingen, {updated} gewijzigde verwijzingen.", flush=True)
+        print(f"Opmerkingen gecontroleerd: {examined}, verschillen gevonden: {updated}, overgeslagen: {skipped}", flush=True)
+    print(f"Gereed: {examined} gecontroleerd, {updated} gewijzigd, {skipped} overgeslagen.", flush=True)
 
 
 def inat_details(identifiers):
